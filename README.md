@@ -10,9 +10,12 @@ without being enabled in Codex.
 
 - `hooks/notify/codex_notify.py`: desktop notification hook for Codex permission,
   parent turn, and subagent lifecycle events.
-- `codex_notify.py`: compatibility entrypoint that runs the notify script above.
 - `scripts/update_hooks.py`: manifest-driven installer and `hooks.json` updater.
 - `scripts/update_hooks.sh`: shell wrapper for daily use.
+
+The repository runtime source is `hooks/notify/codex_notify.py`. The installer
+copies that source to the configured Codex hook directory as `codex_notify.py`;
+there is no root-level compatibility entrypoint.
 
 The notify hook writes runtime logs to:
 
@@ -32,10 +35,20 @@ The notify hook is registered for these Codex events:
 - `SubagentStart`: subagent started.
 - `SubagentStop`: subagent finished.
 
-Notification text includes safe context when Codex provides it: project name from
-`cwd`, shortened cwd, shortened `session_id`, shortened `turn_id`, and shortened
-agent id/type. It intentionally does not display full prompts, commands,
-transcripts, assistant messages, or raw `tool_input` values.
+Notification and speech text include safe context when Codex provides it:
+project name from `cwd`, shortened cwd, explicit top-level
+`thread_name`/`thread_title`/`conversation_name`/`conversation_title` fields,
+shortened `session_id`, shortened `turn_id`, and shortened agent id/type. When
+Codex does not provide an explicit thread or conversation label, speech falls
+back to readable text such as `线程 会话 session-1234` or
+`线程 回合 turn-abcdef` instead of speaking a bare id.
+
+Speech uses concise phrases such as project, thread, turn, role/agent, and the
+current action: parent task started, parent task finished, subagent started,
+subagent finished, or permission requested. It intentionally does not use
+generic top-level `title` or `name` values as thread names, and does not display
+or speak full prompts, commands, transcripts, assistant messages, or raw
+`tool_input` values.
 
 `Stop` and `SubagentStop` write valid JSON stdout before notification side
 effects. Completion notifications are sent through a detached path so Codex does
@@ -65,11 +78,19 @@ Check install and enablement state:
 sh scripts/update_hooks.sh status
 ```
 
+`status` reports `source drift` when the installed live target differs from the
+manifest source in the repository. That means Codex may still be running an old
+hook script even though the repository source has changed.
+
 Preview an install without writing files:
 
 ```bash
 sh scripts/update_hooks.sh dry-run install notify
 ```
+
+When the live target is stale, `dry-run install` reports that it would replace
+the managed target. After a successful install, `status` should return
+`notify: installed, enabled` without `source drift`.
 
 Install and enable the notify hook:
 
@@ -143,5 +164,5 @@ python3 -m pytest tests/hooks/notify/test_codex_notify.py tests/scripts/test_upd
 Run syntax checks without writing bytecode under the macOS user cache:
 
 ```bash
-PYTHONPYCACHEPREFIX=/private/tmp/smartcodex-pycache python3 -m py_compile codex_notify.py hooks/notify/codex_notify.py scripts/update_hooks.py
+PYTHONPYCACHEPREFIX=/private/tmp/smartcodex-pycache python3 -m py_compile hooks/notify/codex_notify.py scripts/update_hooks.py
 ```

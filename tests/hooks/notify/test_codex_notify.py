@@ -29,10 +29,10 @@ class NotifyScriptLayoutTest(unittest.TestCase):
             "notify script should live under hooks/notify/codex_notify.py",
         )
 
-    def test_root_compatibility_entrypoint_exists(self):
-        self.assertTrue(
+    def test_root_compatibility_entrypoint_is_removed(self):
+        self.assertFalse(
             ROOT_SCRIPT_PATH.exists(),
-            "root codex_notify.py should remain as a compatibility entrypoint",
+            "root codex_notify.py should not be used as a runtime source",
         )
 
 
@@ -59,7 +59,7 @@ class CodexNotifyMessageTest(unittest.TestCase):
         self.assertIn("需要你回到 Codex 处理权限弹窗。", message.body)
         self.assertIn("工具：functions.exec_command", message.body)
         self.assertIn("用途：已收到", message.body)
-        self.assertEqual("Codex is waiting for your permission.", message.speech)
+        self.assertEqual("Codex，工具 functions.exec_command 请求权限，等待确认。", message.speech)
         self.assertTrue(message.urgent)
 
     def test_permission_request_message_does_not_expose_command_or_description(self):
@@ -109,12 +109,78 @@ class CodexNotifyMessageTest(unittest.TestCase):
 
         self.assertEqual("Codex 任务已开始", message.title)
         self.assertIn("项目：SmartCodex", message.body)
-        self.assertIn("会话：session-1234", message.body)
+        self.assertIn("线程：会话 session-1234", message.body)
         self.assertIn("回合：turn-abcdef", message.body)
         self.assertIn("正在处理你的请求。", message.body)
-        self.assertEqual("Codex has started your task.", message.speech)
+        self.assertEqual(
+            "项目 SmartCodex，线程 会话 session-1234，回合 turn-abcdef，父任务已开始。",
+            message.speech,
+        )
         self.assertNotIn("write the full secret customer migration prompt", message.body)
         self.assertFalse(message.urgent)
+
+    def test_user_prompt_submit_message_prefers_readable_thread_name(self):
+        message = self.notify.build_message(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "thread_name": "Runtime 文案与事件处理",
+                "cwd": "/Users/mario/SelfProject/SmartCodex",
+                "session_id": "session-1234567890abcdef",
+                "turn_id": "turn-abcdef1234567890",
+                "prompt": "full secret prompt should not become the thread name",
+            }
+        )
+
+        self.assertIn("项目：SmartCodex", message.body)
+        self.assertIn("线程：Runtime 文案与事件处理", message.body)
+        self.assertIn("回合：turn-abcdef", message.body)
+        self.assertNotIn("会话：session-1234", message.body)
+        self.assertEqual(
+            "项目 SmartCodex，线程 Runtime 文案与事件处理，回合 turn-abcdef，父任务已开始。",
+            message.speech,
+        )
+        self.assertNotIn("full secret prompt", message.speech)
+
+    def test_user_prompt_submit_message_accepts_explicit_thread_title_fields(self):
+        cases = (
+            ("thread_title", "Runtime phase review"),
+            ("conversation_name", "SmartCodex notify flow"),
+            ("conversation_title", "Runtime notification contract"),
+        )
+
+        for field, value in cases:
+            with self.subTest(field=field):
+                message = self.notify.build_message(
+                    {
+                        "hook_event_name": "UserPromptSubmit",
+                        field: value,
+                        "cwd": "/Users/mario/SelfProject/SmartCodex",
+                        "session_id": "session-1234567890abcdef",
+                        "turn_id": "turn-abcdef1234567890",
+                    }
+                )
+
+                self.assertIn(f"线程：{value}", message.body)
+                self.assertIn(f"线程 {value}", message.speech)
+                self.assertNotIn("线程：会话 session-1234", message.body)
+
+    def test_generic_title_and_name_do_not_become_thread_name(self):
+        message = self.notify.build_message(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "title": "Non-thread Tool Title",
+                "name": "Non-thread Payload Name",
+                "cwd": "/Users/mario/SelfProject/SmartCodex",
+                "session_id": "session-1234567890abcdef",
+                "turn_id": "turn-abcdef1234567890",
+            }
+        )
+
+        text = "\n".join((message.title, message.body, message.speech))
+        self.assertIn("线程：会话 session-1234", message.body)
+        self.assertIn("线程 会话 session-1234", message.speech)
+        self.assertNotIn("Non-thread Tool Title", text)
+        self.assertNotIn("Non-thread Payload Name", text)
 
     def test_parent_stop_message_marks_parent_task_end(self):
         message = self.notify.build_message(
@@ -129,10 +195,13 @@ class CodexNotifyMessageTest(unittest.TestCase):
 
         self.assertEqual("Codex 任务已结束", message.title)
         self.assertIn("项目：SmartCodex", message.body)
-        self.assertIn("会话：session-1234", message.body)
+        self.assertIn("线程：会话 session-1234", message.body)
         self.assertIn("回合：turn-abcdef", message.body)
         self.assertIn("可以回到 Codex 查看结果。", message.body)
-        self.assertEqual("Codex task is finished.", message.speech)
+        self.assertEqual(
+            "项目 SmartCodex，线程 会话 session-1234，回合 turn-abcdef，父任务已结束，可以查看结果。",
+            message.speech,
+        )
         self.assertNotIn("full assistant answer that should stay private", message.body)
         self.assertFalse(message.urgent)
 
@@ -157,7 +226,7 @@ class CodexNotifyMessageTest(unittest.TestCase):
 
         self.assertEqual("Codex 子任务已启动", message.title)
         self.assertEqual("角色：code-review\n正在处理分配给它的工作。", message.body)
-        self.assertEqual("Codex subagent code-review has started.", message.speech)
+        self.assertEqual("角色 code-review，子任务已开始。", message.speech)
         self.assertFalse(message.urgent)
 
     def test_subagent_start_message_includes_safe_context_when_present(self):
@@ -175,8 +244,12 @@ class CodexNotifyMessageTest(unittest.TestCase):
         self.assertIn("角色：code-review", message.body)
         self.assertIn("Agent：agent-123456", message.body)
         self.assertIn("项目：SmartCodex", message.body)
-        self.assertIn("会话：session-1234", message.body)
+        self.assertIn("线程：会话 session-1234", message.body)
         self.assertIn("回合：turn-abcdef", message.body)
+        self.assertEqual(
+            "项目 SmartCodex，线程 会话 session-1234，回合 turn-abcdef，角色 code-review，Agent agent-123456，子任务已开始。",
+            message.speech,
+        )
 
     def test_subagent_stop_message_invites_return_to_codex(self):
         message = self.notify.build_message(
@@ -188,7 +261,7 @@ class CodexNotifyMessageTest(unittest.TestCase):
 
         self.assertEqual("Codex 子任务已完成", message.title)
         self.assertEqual("角色：code-review\n可以回到 Codex 查看结果。", message.body)
-        self.assertEqual("Codex subagent code-review is finished.", message.speech)
+        self.assertEqual("角色 code-review，子任务已完成，可以查看结果。", message.speech)
         self.assertFalse(message.urgent)
 
     def test_subagent_stop_message_uses_subagent_completion_fields(self):
@@ -206,10 +279,13 @@ class CodexNotifyMessageTest(unittest.TestCase):
         self.assertEqual("Codex 子任务已完成", message.title)
         self.assertIn("角色：fullstack-developer", message.body)
         self.assertIn("Agent：agent-123456", message.body)
-        self.assertIn("回合：turn-abcdef", message.body)
+        self.assertIn("线程：回合 turn-abcdef", message.body)
         self.assertIn("可以回到 Codex 查看结果。", message.body)
         self.assertNotIn("full subagent result that should stay private", message.body)
-        self.assertEqual("Codex subagent fullstack-developer is finished.", message.speech)
+        self.assertEqual(
+            "项目 SmartCodex，线程 回合 turn-abcdef，角色 fullstack-developer，Agent agent-123456，子任务已完成，可以查看结果。",
+            message.speech,
+        )
         self.assertFalse(message.urgent)
 
     def test_subagent_stop_message_bounds_long_agent_project_and_thread_context(self):
@@ -231,15 +307,18 @@ class CodexNotifyMessageTest(unittest.TestCase):
 
         self.assertIn("角色：fullstack-", message.body)
         self.assertIn("项目：SmartCodex-", message.body)
-        self.assertIn("会话：session-1234", message.body)
+        self.assertIn("线程：会话 session-1234", message.body)
         self.assertIn("回合：turn-abcdef", message.body)
         self.assertLess(len(message.body), 260)
-        self.assertLess(len(message.speech), 120)
+        self.assertLessEqual(len(message.speech), self.notify.SPEECH_DISPLAY_LENGTH)
         self.assertNotIn("agent" * 50, message.body)
         self.assertNotIn("Project" * 50, message.body)
         self.assertNotIn("1234567890" * 10, message.body)
         self.assertNotIn("abcdef1234567890" * 10, message.body)
         self.assertNotIn("agent" * 50, message.speech)
+        self.assertIn("线程", message.speech)
+        self.assertIn("子任务已完成", message.speech)
+        self.assertIn("Agent：agent-123456", message.body)
 
     def test_subagent_stop_completion_path_is_detected(self):
         self.assertTrue(
@@ -276,9 +355,32 @@ class CodexNotifyMessageTest(unittest.TestCase):
         )
 
         self.assertIn("项目：SmartCodex", message.body)
-        self.assertIn("会话：session-1234", message.body)
+        self.assertIn("线程：会话 session-1234", message.body)
         self.assertIn("回合：turn-abcdef", message.body)
+        self.assertEqual(
+            "项目 SmartCodex，线程 会话 session-1234，回合 turn-abcdef，工具 functions.exec_command 请求权限，等待确认。",
+            message.speech,
+        )
         self.assertNotIn("full secret tool input should not appear", message.body)
+
+    def test_notification_thread_context_uses_only_safe_top_level_fields(self):
+        message = self.notify.build_message(
+            {
+                "hook_event_name": "Stop",
+                "cwd": "/Users/mario/SelfProject/SmartCodex",
+                "session_id": "session-1234567890abcdef",
+                "turn_id": "turn-abcdef1234567890",
+                "tool_input": {"thread_name": "Secret Tool Thread"},
+                "transcript": "thread_name: Secret Transcript Thread",
+                "last_assistant_message": "thread_name: Secret Assistant Thread",
+            }
+        )
+
+        text = "\n".join((message.title, message.body, message.speech))
+        self.assertIn("线程：会话 session-1234", message.body)
+        self.assertNotIn("Secret Tool Thread", text)
+        self.assertNotIn("Secret Transcript Thread", text)
+        self.assertNotIn("Secret Assistant Thread", text)
 
     def test_notification_text_excludes_sensitive_hook_fields(self):
         message = self.notify.build_message(
@@ -301,6 +403,48 @@ class CodexNotifyMessageTest(unittest.TestCase):
         self.assertNotIn("full last assistant message should not appear", text)
         self.assertNotIn("full tool input should not appear", text)
         self.assertNotIn("transcript content should not appear", text)
+
+    def test_speech_context_does_not_read_transcript_for_thread_name(self):
+        message = self.notify.build_message(
+            {
+                "hook_event_name": "Stop",
+                "cwd": "/Users/mario/SelfProject/SmartCodex",
+                "session_id": "session-1234567890abcdef",
+                "turn_id": "turn-abcdef1234567890",
+                "transcript": "thread name: Secret Production Migration",
+            }
+        )
+
+        self.assertIn("线程 会话 session-1234", message.speech)
+        self.assertIn("回合 turn-abcdef", message.speech)
+        self.assertNotIn("Secret Production Migration", message.speech)
+
+    def test_registered_events_have_messages_with_readable_actions(self):
+        cases = [
+            ("UserPromptSubmit", "父任务已开始"),
+            ("Stop", "父任务已结束"),
+            ("SubagentStart", "子任务已开始"),
+            ("SubagentStop", "子任务已完成"),
+            ("PermissionRequest", "请求权限"),
+        ]
+
+        for event, action in cases:
+            with self.subTest(event=event):
+                message = self.notify.build_message(
+                    {
+                        "hook_event_name": event,
+                        "cwd": "/Users/mario/SelfProject/SmartCodex",
+                        "session_id": "session-1234567890abcdef",
+                        "turn_id": "turn-abcdef1234567890",
+                        "agent_type": "fullstack-developer",
+                        "tool_name": "functions.exec_command",
+                    }
+                )
+
+                self.assertIsNotNone(message)
+                self.assertIn("项目 SmartCodex", message.speech)
+                self.assertIn("线程 会话 session-1234", message.speech)
+                self.assertIn(action, message.speech)
 
 
 class CodexNotifyStdoutTest(unittest.TestCase):
@@ -432,7 +576,7 @@ class CodexNotifyStdoutTest(unittest.TestCase):
         payload = json.loads(detached_events[0][2][self.notify.DETACHED_NOTIFY_ENV])
         self.assertEqual("SubagentStop", payload["event"])
         self.assertEqual("Codex 子任务已完成", payload["message"]["title"])
-        self.assertEqual("Codex subagent code-review is finished.", payload["message"]["speech"])
+        self.assertEqual("角色 code-review，Agent agent-123456，子任务已完成，可以查看结果。", payload["message"]["speech"])
 
     def test_subagent_stop_detached_payload_is_bounded_with_long_context(self):
         long_agent = "fullstack-" + ("agent" * 400)
@@ -461,7 +605,7 @@ class CodexNotifyStdoutTest(unittest.TestCase):
         self.assertLess(len(raw_payload), 900)
         self.assertIn("角色：fullstack-", payload["message"]["body"])
         self.assertIn("项目：SmartCodex-", payload["message"]["body"])
-        self.assertIn("会话：session-1234", payload["message"]["body"])
+        self.assertIn("线程：会话 session-1234", payload["message"]["body"])
         self.assertIn("回合：turn-abcdef", payload["message"]["body"])
         self.assertNotIn("agent" * 50, text)
         self.assertNotIn("Project" * 50, text)

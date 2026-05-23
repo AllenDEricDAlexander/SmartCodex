@@ -24,6 +24,9 @@ AGENT_ID_DISPLAY_LENGTH = 12
 CWD_DISPLAY_LENGTH = 64
 PROJECT_DISPLAY_LENGTH = 48
 AGENT_NAME_DISPLAY_LENGTH = 64
+SPEECH_AGENT_NAME_DISPLAY_LENGTH = 32
+THREAD_NAME_DISPLAY_LENGTH = 64
+SPEECH_DISPLAY_LENGTH = 180
 DETACHED_TITLE_DISPLAY_LENGTH = 120
 DETACHED_BODY_DISPLAY_LENGTH = 800
 DETACHED_SPEECH_DISPLAY_LENGTH = 240
@@ -31,6 +34,12 @@ DETACHED_EVENT_DISPLAY_LENGTH = 64
 DETACHED_TOOL_NAME_DISPLAY_LENGTH = 160
 DETACHED_NOTIFY_ARG = "--detached-notify"
 DETACHED_NOTIFY_ENV = "CODEX_NOTIFY_DETACHED_PAYLOAD"
+THREAD_NAME_FIELDS = (
+    "thread_name",
+    "thread_title",
+    "conversation_name",
+    "conversation_title",
+)
 
 
 @dataclass(frozen=True)
@@ -147,6 +156,37 @@ def project_label(cwd) -> str:
     return shorten(Path(text).name or text, PROJECT_DISPLAY_LENGTH)
 
 
+def readable_thread_name(data: dict) -> str:
+    # 只信任 hook payload 的顶层显式命名字段，不从 prompt/transcript/tool_input 推断线程名。
+    for field in THREAD_NAME_FIELDS:
+        value = data.get(field)
+        if isinstance(value, (str, int, float)):
+            text = shorten(value, THREAD_NAME_DISPLAY_LENGTH)
+            if text:
+                return text
+    return ""
+
+
+def turn_label(data: dict) -> str:
+    return short_id(data.get("turn_id"), TURN_ID_DISPLAY_LENGTH)
+
+
+def thread_label(data: dict) -> str:
+    name = readable_thread_name(data)
+    if name:
+        return name
+
+    session_id = short_id(data.get("session_id"), SESSION_ID_DISPLAY_LENGTH)
+    if session_id:
+        return f"会话 {session_id}"
+
+    turn_id = turn_label(data)
+    if turn_id:
+        return f"回合 {turn_id}"
+
+    return ""
+
+
 def context_lines(data: dict) -> list[str]:
     # 只使用 hook 的安全上下文字段，避免把 prompt/转写/工具输入带进通知。
     lines = []
@@ -158,11 +198,11 @@ def context_lines(data: dict) -> list[str]:
             line += f" ({cwd})"
         lines.append(line)
 
-    session_id = short_id(data.get("session_id"), SESSION_ID_DISPLAY_LENGTH)
-    turn_id = short_id(data.get("turn_id"), TURN_ID_DISPLAY_LENGTH)
-    if session_id:
-        lines.append(f"会话：{session_id}")
-    if turn_id:
+    thread = thread_label(data)
+    turn_id = turn_label(data)
+    if thread:
+        lines.append(f"线程：{thread}")
+    if turn_id and thread != f"回合 {turn_id}":
         lines.append(f"回合：{turn_id}")
     return lines
 
@@ -460,14 +500,14 @@ def tool_detail(tool_input) -> str:
     return ""
 
 
-def agent_name(data: dict) -> str:
+def agent_name(data: dict, limit: int = AGENT_NAME_DISPLAY_LENGTH) -> str:
     return shorten(
         data.get("agent_type")
         or data.get("agent_id")
         or data.get("subagent_type")
         or data.get("subagent_id")
         or "未知 subagent",
-        AGENT_NAME_DISPLAY_LENGTH,
+        limit,
     )
 
 
@@ -498,6 +538,47 @@ def agent_context_lines(data: dict) -> list[str]:
     return lines
 
 
+def speech_context(data: dict, include_agent: bool = False) -> str:
+    # 语音只拼接安全短上下文，不读取 prompt/transcript/tool_input/assistant message。
+    parts = []
+    project = project_label(data.get("cwd"))
+    if project:
+        parts.append(f"项目 {project}")
+
+    thread = thread_label(data)
+    turn_id = turn_label(data)
+    if thread:
+        parts.append(f"线程 {thread}")
+    if turn_id and thread != f"回合 {turn_id}":
+        parts.append(f"回合 {turn_id}")
+
+    if include_agent:
+        agent_type = shorten(
+            data.get("agent_type") or data.get("subagent_type") or "",
+            SPEECH_AGENT_NAME_DISPLAY_LENGTH,
+        )
+        agent_id = short_id(data.get("agent_id") or data.get("subagent_id"), AGENT_ID_DISPLAY_LENGTH)
+        if agent_type:
+            parts.append(f"角色 {agent_type}")
+        if agent_id:
+            parts.append(f"Agent {agent_id}")
+        if not agent_type and not agent_id:
+            parts.append("角色 未知 subagent")
+
+    return "，".join(parts)
+
+
+def speech_text(data: dict, action: str, include_agent: bool = False) -> str:
+    context = speech_context(data, include_agent=include_agent) or "Codex"
+    context_limit = max(1, SPEECH_DISPLAY_LENGTH - len(action) - 2)
+    return f"{shorten(context, context_limit)}，{action}。"
+
+
+def permission_speech(data: dict) -> str:
+    tool = shorten(data.get("tool_name") or "未知工具", DETACHED_TOOL_NAME_DISPLAY_LENGTH)
+    return speech_text(data, f"工具 {tool} 请求权限，等待确认")
+
+
 def build_message(data: dict) -> HookMessage | None:
     event = data.get("hook_event_name", "")
 
@@ -505,24 +586,23 @@ def build_message(data: dict) -> HookMessage | None:
         return HookMessage(
             title="Codex 任务已开始",
             body=body_text(["正在处理你的请求。"], data),
-            speech="Codex has started your task.",
+            speech=speech_text(data, "父任务已开始"),
         )
 
     if event == "Stop":
         return HookMessage(
             title="Codex 任务已结束",
             body=body_text(["可以回到 Codex 查看结果。"], data),
-            speech="Codex task is finished.",
+            speech=speech_text(data, "父任务已结束，可以查看结果"),
         )
 
     if event == "SubagentStart":
-        agent = agent_name(data)
         lines = agent_context_lines(data)
         lines.append("正在处理分配给它的工作。")
         return HookMessage(
             title="Codex 子任务已启动",
             body=body_text(lines, data),
-            speech=f"Codex subagent {agent} has started.",
+            speech=speech_text(data, "子任务已开始", include_agent=True),
         )
 
     if event == "PermissionRequest":
@@ -534,18 +614,17 @@ def build_message(data: dict) -> HookMessage | None:
         return HookMessage(
             title="Codex 等你确认权限",
             body=body_text(lines, data),
-            speech="Codex is waiting for your permission.",
+            speech=permission_speech(data),
             urgent=True,
         )
 
     if is_agent_completion_event(data):
-        agent = agent_name(data)
         lines = agent_context_lines(data)
         lines.append("可以回到 Codex 查看结果。")
         return HookMessage(
             title="Codex 子任务已完成",
             body=body_text(lines, data),
-            speech=f"Codex subagent {agent} is finished.",
+            speech=speech_text(data, "子任务已完成，可以查看结果", include_agent=True),
         )
 
     return None

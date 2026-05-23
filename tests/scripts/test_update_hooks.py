@@ -742,6 +742,27 @@ class UpdateHooksScriptTest(unittest.TestCase):
             self.assertFalse(list(hooks_json.parent.glob("hooks.json.smartcodex-backup-*")))
             self.assertFalse((home / ".codex" / "hooks" / "codex_notify.py").exists())
 
+    def test_dry_run_install_reports_managed_target_drift_without_writing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+
+            install_result = self.run_script(home, "install", "notify")
+            self.assertEqual(0, install_result.returncode, install_result.stderr)
+
+            hooks_json = home / ".codex" / "hooks.json"
+            target_script = home / ".codex" / "hooks" / "codex_notify.py"
+            original_text = hooks_json.read_text(encoding="utf-8")
+            target_script.write_text("# old managed SmartCodex notify hook\n", encoding="utf-8")
+
+            result = self.run_script(home, "dry-run", "install", "notify")
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("would replace managed target: " + str(target_script.resolve()), result.stdout)
+            self.assertIn("source differs from installed target", result.stdout)
+            self.assertEqual("# old managed SmartCodex notify hook\n", target_script.read_text(encoding="utf-8"))
+            self.assertEqual(original_text, hooks_json.read_text(encoding="utf-8"))
+            self.assertFalse(list(hooks_json.parent.glob("hooks.json.smartcodex-backup-*")))
+
     def test_disable_removes_only_smartcodex_entries_and_writes_backup(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
@@ -782,6 +803,22 @@ class UpdateHooksScriptTest(unittest.TestCase):
 
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertIn("notify: installed, enabled", result.stdout)
+
+    def test_status_reports_managed_target_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+
+            install_result = self.run_script(home, "install", "notify")
+            self.assertEqual(0, install_result.returncode, install_result.stderr)
+
+            target_script = home / ".codex" / "hooks" / "codex_notify.py"
+            target_script.write_text("# old managed SmartCodex notify hook\n", encoding="utf-8")
+
+            result = self.run_script(home, "status", "--dry-run")
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("notify: installed, enabled, source drift", result.stdout)
+            self.assertIn("target differs from manifest source: " + str(target_script.resolve()), result.stdout)
 
     def test_status_accepts_manifest_option_and_dry_run_without_writing(self):
         with tempfile.TemporaryDirectory() as tmp:

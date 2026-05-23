@@ -220,6 +220,32 @@ def hook_command(hook: dict, target_dir: Path) -> str:
     return template.format(id=hook["id"], target_path=str(target_path))
 
 
+def source_target_drift(hook: dict, target_dir: Path) -> dict | None:
+    source = ROOT / "hooks" / hook["source"]
+    target = target_dir / hook["target"]
+    if not source.exists() or not target.exists():
+        return None
+    if filecmp.cmp(source, target, shallow=False):
+        return None
+    return {"hook": hook, "source": source, "target": target}
+
+
+def managed_source_target_drifts(
+    selected_hooks: list[dict],
+    target_dir: Path,
+    managed_targets: set[tuple[str, Path]],
+) -> list[dict]:
+    drifts = []
+    for hook in selected_hooks:
+        target = target_dir / hook["target"]
+        if (hook["id"], target) not in managed_targets:
+            continue
+        drift = source_target_drift(hook, target_dir)
+        if drift:
+            drifts.append(drift)
+    return drifts
+
+
 def add_managed_entries(config: dict, selected_hooks: list[dict], target_dir: Path) -> None:
     hooks_config = config.setdefault("hooks", {})
     for hook in selected_hooks:
@@ -314,8 +340,12 @@ def print_dry_run_install(
     target_dir: Path,
     adoptions: list[dict],
     duplicate_entries: list[dict],
+    managed_drifts: list[dict],
     adopt_existing: bool,
 ) -> None:
+    for drift in managed_drifts:
+        print(f"would replace managed target: {drift['target']}")
+        print(f"source differs from installed target: {drift['source']}")
     if adopt_existing:
         for adoption in adoptions:
             hook = adoption["hook"]
@@ -357,13 +387,19 @@ def print_status(manifest: dict, selected_hooks: list[dict], target_dir: Path) -
     for hook in selected_hooks:
         installed = (target_dir / hook["target"]).exists()
         enabled = hook_is_enabled(config, hook["id"])
+        drift = source_target_drift(hook, target_dir)
         state = []
         state.append("installed" if installed else "not installed")
         state.append("enabled" if enabled else "disabled")
+        if drift:
+            state.append("source drift")
         duplicates = [entry for entry in duplicate_entries if entry["hook_id"] == hook["id"]]
         if duplicates:
             state.append(f"duplicate legacy entries: {len(duplicates)}")
         print(f"{hook['id']}: {', '.join(state)}")
+        if drift:
+            print(f"target differs from manifest source: {drift['target']}")
+            print(f"manifest source: {drift['source']}")
         for entry in sorted(duplicates, key=lambda item: (item["event"], item["command"])):
             print_legacy_duplicate(entry)
 
@@ -373,9 +409,10 @@ def install(manifest: dict, selected_hooks: list[dict], target_dir: Path, dry_ru
     selected_ids = {hook["id"] for hook in selected_hooks}
     managed_targets = managed_hook_targets(config, selected_hooks, target_dir)
     adoptions, duplicate_entries = install_plan(config, selected_hooks, target_dir, managed_targets, adopt_existing)
+    managed_drifts = managed_source_target_drifts(selected_hooks, target_dir, managed_targets)
 
     if dry_run:
-        print_dry_run_install(selected_hooks, target_dir, adoptions, duplicate_entries, adopt_existing)
+        print_dry_run_install(selected_hooks, target_dir, adoptions, duplicate_entries, managed_drifts, adopt_existing)
         return
 
     target_backups = []
