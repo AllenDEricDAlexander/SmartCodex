@@ -13,9 +13,11 @@ MANIFEST_PATH = ROOT / "hooks" / "hooks.manifest.json"
 
 
 class UpdateHooksScriptTest(unittest.TestCase):
-    def run_script(self, home: Path, *args: str):
+    def run_script(self, home: Path, *args: str, extra_env=None):
         env = os.environ.copy()
         env["HOME"] = str(home)
+        if extra_env:
+            env.update(extra_env)
         env.pop("PYTHONHOME", None)
         return subprocess.run(
             [sys.executable, str(SCRIPT_PATH), *args],
@@ -40,6 +42,13 @@ class UpdateHooksScriptTest(unittest.TestCase):
                         commands.append(command)
         return commands
 
+    def codex_resources(self, tmp: str, icon_name="icon.icns") -> Path:
+        resources = Path(tmp) / "Codex.app" / "Contents" / "Resources"
+        resources.mkdir(parents=True)
+        if icon_name:
+            (resources / icon_name).write_bytes(b"fake icns")
+        return resources
+
     def test_manifest_is_available_for_cli_operations(self):
         self.assertTrue(MANIFEST_PATH.exists())
 
@@ -56,11 +65,25 @@ class UpdateHooksScriptTest(unittest.TestCase):
 
         notify_hook = next(hook for hook in manifest["hooks"] if hook["id"] == "notify")
 
+        self.assertIn("SessionStart", notify_hook["events"])
         self.assertIn("UserPromptSubmit", notify_hook["events"])
         self.assertIn("SubagentStart", notify_hook["events"])
         self.assertIn("SubagentStop", notify_hook["events"])
         self.assertIn("Stop", notify_hook["events"])
         self.assertIn("PermissionRequest", notify_hook["events"])
+
+    def test_notify_manifest_exposes_stable_macos_helper_interface(self):
+        with MANIFEST_PATH.open(encoding="utf-8") as f:
+            manifest = json.load(f)
+
+        notify_hook = next(hook for hook in manifest["hooks"] if hook["id"] == "notify")
+        helper = next(helper for helper in notify_hook["helpers"] if helper["id"] == "macos_notify")
+
+        self.assertEqual("notify/macos_helper", helper["source"])
+        self.assertEqual("notify_macos_helper", helper["target"])
+        self.assertEqual("codex_macos_notify.py", helper["entrypoint"])
+        self.assertEqual("SMARTCODEX_NOTIFY_HELPER", helper["runtime_env"])
+        self.assertIn("SMARTCODEX_NOTIFY_HELPER=", notify_hook["command_template"])
 
     def test_notify_manifest_does_not_depend_on_unsupported_agent_stop(self):
         with MANIFEST_PATH.open(encoding="utf-8") as f:
@@ -129,7 +152,7 @@ class UpdateHooksScriptTest(unittest.TestCase):
             self.assertEqual(0, result.returncode, result.stderr)
             updated = self.load_hooks_json(home)
             managed_commands = self.managed_commands(updated)
-            self.assertEqual(5, len(managed_commands))
+            self.assertEqual(6, len(managed_commands))
             self.assertTrue(all("SMARTCODEX_MANAGED_HOOK=notify" in command for command in managed_commands))
             self.assertIn("python3 /user/permission.py", json.dumps(updated))
             self.assertIn("python3 /user/stop.py", json.dumps(updated))
@@ -139,6 +162,89 @@ class UpdateHooksScriptTest(unittest.TestCase):
             self.assertEqual(1, len(backups))
             with backups[0].open(encoding="utf-8") as f:
                 self.assertEqual(original_config, json.load(f))
+
+    def test_install_copies_macos_helper_with_codex_icon_and_runtime_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            resources = self.codex_resources(tmp, "icon.icns")
+
+            result = self.run_script(
+                home,
+                "install",
+                "notify",
+                extra_env={"SMARTCODEX_CODEX_RESOURCES_DIR": str(resources)},
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            helper_dir = home / ".codex" / "hooks" / "notify_macos_helper"
+            helper_script = helper_dir / "codex_macos_notify.py"
+            app_script = helper_dir / "CodexNotify.app" / "Contents" / "MacOS" / "codex-notify-app"
+            app_icon = helper_dir / "CodexNotify.app" / "Contents" / "Resources" / "icon.icns"
+            self.assertTrue(helper_script.exists())
+            self.assertTrue(os.access(helper_script, os.X_OK))
+            self.assertTrue(app_script.exists())
+            self.assertTrue(os.access(app_script, os.X_OK))
+            self.assertEqual(b"fake icns", app_icon.read_bytes())
+
+            updated = self.load_hooks_json(home)
+            commands = self.managed_commands(updated)
+            self.assertTrue(all(f'SMARTCODEX_NOTIFY_HELPER="{helper_script.resolve()}"' in command for command in commands))
+            self.assertNotIn("terminal-notifier", json.dumps(updated))
+            self.assertNotIn("terminal-notifier", helper_script.read_text(encoding="utf-8"))
+
+    def test_macos_helper_launches_installed_app_when_icon_is_available(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            resources = self.codex_resources(tmp, "icon.icns")
+            install_result = self.run_script(
+                home,
+                "install",
+                "notify",
+                extra_env={"SMARTCODEX_CODEX_RESOURCES_DIR": str(resources)},
+            )
+            self.assertEqual(0, install_result.returncode, install_result.stderr)
+
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            open_log = Path(tmp) / "open.log"
+            fake_open = bin_dir / "open"
+            fake_open.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" > {open_log!s}\n", encoding="utf-8")
+            fake_open.chmod(0o755)
+            helper_script = home / ".codex" / "hooks" / "notify_macos_helper" / "codex_macos_notify.py"
+
+            env = os.environ.copy()
+            env["PATH"] = str(bin_dir)
+            env.pop("PYTHONHOME", None)
+            result = subprocess.run(
+                [sys.executable, str(helper_script), "--title", "T", "--message", "M"],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn(str(helper_script.parent / "CodexNotify.app"), open_log.read_text(encoding="utf-8"))
+
+    def test_install_keeps_helper_available_when_codex_icon_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            resources = self.codex_resources(tmp, None)
+
+            result = self.run_script(
+                home,
+                "install",
+                "notify",
+                extra_env={"SMARTCODEX_CODEX_RESOURCES_DIR": str(resources)},
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            helper_dir = home / ".codex" / "hooks" / "notify_macos_helper"
+            helper_script = helper_dir / "codex_macos_notify.py"
+            app_icon = helper_dir / "CodexNotify.app" / "Contents" / "Resources" / "icon.icns"
+            self.assertTrue(helper_script.exists())
+            self.assertFalse(app_icon.exists())
+            self.assertIn("Codex icon not found; helper will use osascript fallback", result.stdout)
 
     def test_install_refuses_to_clobber_unmanaged_target_script(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -481,6 +587,7 @@ class UpdateHooksScriptTest(unittest.TestCase):
                 notify_command_counts[event] = count
             self.assertEqual(
                 {
+                    "SessionStart": 1,
                     "PermissionRequest": 1,
                     "SubagentStart": 1,
                     "SubagentStop": 1,
@@ -538,7 +645,7 @@ class UpdateHooksScriptTest(unittest.TestCase):
             self.assertIn("python3 /user/permission.py", json.dumps(updated))
             self.assertNotIn('python3 "$HOME/.codex/hooks/codex_notify.py"', json.dumps(updated))
             managed_commands = self.managed_commands(updated)
-            self.assertEqual(5, len(managed_commands))
+            self.assertEqual(6, len(managed_commands))
             self.assertTrue(all("SMARTCODEX_MANAGED_HOOK=notify" in command for command in managed_commands))
 
             hooks_json_backups = sorted(hooks_json.parent.glob("hooks.json.smartcodex-backup-*"))
@@ -694,7 +801,7 @@ class UpdateHooksScriptTest(unittest.TestCase):
                 self.assertEqual(f.read(), target_script.read_text(encoding="utf-8"))
             updated = self.load_hooks_json(home)
             managed_commands = self.managed_commands(updated)
-            self.assertEqual(5, len(managed_commands))
+            self.assertEqual(6, len(managed_commands))
             self.assertTrue(all("SMARTCODEX_MANAGED_HOOK=notify" in command for command in managed_commands))
             backups = sorted(hooks_json.parent.glob("hooks.json.smartcodex-backup-*"))
             self.assertEqual(1, len(backups))
@@ -762,6 +869,45 @@ class UpdateHooksScriptTest(unittest.TestCase):
             self.assertEqual("# old managed SmartCodex notify hook\n", target_script.read_text(encoding="utf-8"))
             self.assertEqual(original_text, hooks_json.read_text(encoding="utf-8"))
             self.assertFalse(list(hooks_json.parent.glob("hooks.json.smartcodex-backup-*")))
+
+    def test_status_and_reinstall_handle_managed_helper_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            resources = self.codex_resources(tmp, "electron.icns")
+
+            install_result = self.run_script(
+                home,
+                "install",
+                "notify",
+                extra_env={"SMARTCODEX_CODEX_RESOURCES_DIR": str(resources)},
+            )
+            self.assertEqual(0, install_result.returncode, install_result.stderr)
+
+            hooks_json = home / ".codex" / "hooks.json"
+            original_text = hooks_json.read_text(encoding="utf-8")
+            helper_script = home / ".codex" / "hooks" / "notify_macos_helper" / "codex_macos_notify.py"
+            helper_script.write_text("# old managed SmartCodex macOS helper\n", encoding="utf-8")
+
+            status_result = self.run_script(home, "status", "--dry-run")
+            self.assertEqual(0, status_result.returncode, status_result.stderr)
+            self.assertIn("notify: installed, enabled, helper source drift", status_result.stdout)
+            self.assertIn("helper target differs from manifest source: " + str(helper_script.resolve()), status_result.stdout)
+
+            dry_run_result = self.run_script(home, "dry-run", "install", "notify")
+            self.assertEqual(0, dry_run_result.returncode, dry_run_result.stderr)
+            self.assertIn("would replace managed helper target: " + str(helper_script.resolve()), dry_run_result.stdout)
+            self.assertEqual("# old managed SmartCodex macOS helper\n", helper_script.read_text(encoding="utf-8"))
+            self.assertEqual(original_text, hooks_json.read_text(encoding="utf-8"))
+
+            reinstall_result = self.run_script(
+                home,
+                "install",
+                "notify",
+                extra_env={"SMARTCODEX_CODEX_RESOURCES_DIR": str(resources)},
+            )
+            self.assertEqual(0, reinstall_result.returncode, reinstall_result.stderr)
+            with (ROOT / "hooks" / "notify" / "macos_helper" / "codex_macos_notify.py").open(encoding="utf-8") as f:
+                self.assertEqual(f.read(), helper_script.read_text(encoding="utf-8"))
 
     def test_disable_removes_only_smartcodex_entries_and_writes_backup(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -10,6 +10,8 @@ without being enabled in Codex.
 
 - `hooks/notify/codex_notify.py`: desktop notification hook for Codex permission,
   parent turn, and subagent lifecycle events.
+- `hooks/notify/macos_helper/`: local macOS notification helper used to show
+  notifications with the Codex icon when available.
 - `scripts/update_hooks.py`: manifest-driven installer and `hooks.json` updater.
 - `scripts/update_hooks.sh`: shell wrapper for daily use.
 
@@ -29,26 +31,53 @@ success/fallback/error state, and message lengths, but does not persist full
 
 The notify hook is registered for these Codex events:
 
+- `SessionStart`: session started, resumed, cleared, or compacted.
 - `UserPromptSubmit`: parent task/turn started.
 - `Stop`: parent task/turn finished.
 - `PermissionRequest`: Codex is waiting for permission.
 - `SubagentStart`: subagent started.
 - `SubagentStop`: subagent finished.
 
-Notification and speech text include safe context when Codex provides it:
-project name from `cwd`, shortened cwd, explicit top-level
-`thread_name`/`thread_title`/`conversation_name`/`conversation_title` fields,
-shortened `session_id`, shortened `turn_id`, and shortened agent id/type. When
-Codex does not provide an explicit thread or conversation label, speech falls
-back to readable text such as `线程 会话 session-1234` or
-`线程 回合 turn-abcdef` instead of speaking a bare id.
+Notification title and body use English-only text:
 
-Speech uses concise phrases such as project, thread, turn, role/agent, and the
-current action: parent task started, parent task finished, subagent started,
-subagent finished, or permission requested. It intentionally does not use
-generic top-level `title` or `name` values as thread names, and does not display
-or speak full prompts, commands, transcripts, assistant messages, or raw
-`tool_input` values.
+```text
+<project> | <agent> | <action>
+```
+
+Speech uses a separate text optimized for macOS `say`:
+
+```text
+Project <project>, <agent phrase>, <action>.
+```
+
+The project is resolved from the hook payload `cwd`, then the hook process
+working directory, then `PWD`. Parent events use `parent`; subagent events use
+`agent_type`, then `subagent_type`, then a safe non-id name, and finally
+`subagent`.
+
+Actions are mapped as:
+
+- `SessionStart`: `Session started`
+- `UserPromptSubmit`: `Task started`
+- `Stop`: `Task finished`
+- `PermissionRequest`: `Permission requested`
+- `SubagentStart`: `Task started`
+- `SubagentStop`: `Task finished`
+
+Examples:
+
+```text
+SmartReader | parent | Session started
+SmartReader | parent | Task started
+SmartReader | parent | Permission requested
+SmartReader | fullstack-developer | Task started
+SmartReader | fullstack-developer | Task finished
+SmartReader | parent | Task finished
+```
+
+Internal identifiers are log-only. Notifications and speech never include
+dialog, thread, session, turn, or agent ids, and never include full prompts,
+commands, transcripts, assistant messages, or raw `tool_input` values.
 
 `Stop` and `SubagentStop` write valid JSON stdout before notification side
 effects. Completion notifications are sent through a detached path so Codex does
@@ -61,8 +90,28 @@ permission dialogs are opt-in with:
 CODEX_NOTIFY_URGENT_MODAL=1
 ```
 
-Speech playback is serialized across hook processes and uses bounded cleanup so
-multiple reminders do not speak over each other.
+On macOS, the installer writes `SMARTCODEX_NOTIFY_HELPER` into each managed hook
+command. The runtime uses the stable `osascript display notification` path by
+default. The local `CodexNotify.app` helper is installed but opt-in because the
+helper app path can be blocked by LaunchServices on some macOS setups. Enable it
+only for local experiments with:
+
+```bash
+SMARTCODEX_NOTIFY_USE_HELPER=1
+```
+
+The installer copies `/Applications/Codex.app/Contents/Resources/icon.icns` into
+the helper app, falls back to `electron.icns`, and leaves the helper on the
+`osascript` notification path if neither icon exists.
+
+Speech playback is serialized across hook processes so multiple reminders do
+not speak over each other. macOS speech uses `say -r 300` by default. Override
+the voice or speed with:
+
+```bash
+CODEX_NOTIFY_VOICE=Mei-Jia
+CODEX_NOTIFY_RATE=240
+```
 
 ## Hook Management
 
@@ -79,8 +128,9 @@ sh scripts/update_hooks.sh status
 ```
 
 `status` reports `source drift` when the installed live target differs from the
-manifest source in the repository. That means Codex may still be running an old
-hook script even though the repository source has changed.
+manifest source in the repository. It reports `helper source drift` when an
+installed helper file differs from its repository source. Either state means
+Codex may still be running old notification code.
 
 Preview an install without writing files:
 
@@ -88,15 +138,20 @@ Preview an install without writing files:
 sh scripts/update_hooks.sh dry-run install notify
 ```
 
-When the live target is stale, `dry-run install` reports that it would replace
-the managed target. After a successful install, `status` should return
-`notify: installed, enabled` without `source drift`.
+When the live target or helper is stale, `dry-run install` reports that it would
+replace the managed target. After a successful install, `status` should return
+`notify: installed, enabled` without drift.
 
 Install and enable the notify hook:
 
 ```bash
 sh scripts/update_hooks.sh install notify
 ```
+
+This copies `hooks/notify/codex_notify.py` to `~/.codex/hooks/codex_notify.py`,
+installs the macOS helper under `~/.codex/hooks/notify_macos_helper`, injects
+`SMARTCODEX_NOTIFY_HELPER` into all managed notify commands, and backs up
+`~/.codex/hooks.json` before writing.
 
 If you already had a manually installed notify hook, `status` or `dry-run` may
 report duplicate legacy entries such as `python3 "$HOME/.codex/hooks/codex_notify.py"`.
@@ -158,11 +213,11 @@ python3 scripts/update_hooks.py status --manifest hooks/hooks.manifest.json --dr
 Run focused tests:
 
 ```bash
-python3 -m pytest tests/hooks/notify/test_codex_notify.py tests/scripts/test_update_hooks.py
+python3 -B -m pytest -p no:cacheprovider tests/hooks/notify/test_codex_notify.py tests/scripts/test_update_hooks.py
 ```
 
 Run syntax checks without writing bytecode under the macOS user cache:
 
 ```bash
-PYTHONPYCACHEPREFIX=/private/tmp/smartcodex-pycache python3 -m py_compile hooks/notify/codex_notify.py scripts/update_hooks.py
+PYTHONPYCACHEPREFIX=/private/tmp/smartcodex-pycache python3 -m py_compile hooks/notify/codex_notify.py hooks/notify/macos_helper/codex_macos_notify.py scripts/update_hooks.py
 ```

@@ -17,6 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "hooks" / "hooks.manifest.json"
 HOOKS_JSON_PATH = Path.home() / ".codex" / "hooks.json"
 MANAGED_MARKER = "SMARTCODEX_MANAGED_HOOK="
+CODEX_RESOURCES_ENV = "SMARTCODEX_CODEX_RESOURCES_DIR"
+CODEX_APP_RESOURCES = Path("/Applications/Codex.app/Contents/Resources")
+CODEX_ICON_NAMES = ("icon.icns", "electron.icns")
 
 
 class HookUpdateError(Exception):
@@ -217,7 +220,81 @@ def remove_managed_entries(config: dict, hook_ids: set[str], duplicate_entries: 
 def hook_command(hook: dict, target_dir: Path) -> str:
     target_path = target_dir / hook["target"]
     template = hook["command_template"]
-    return template.format(id=hook["id"], target_path=str(target_path))
+    return template.format(id=hook["id"], target_path=str(target_path), target_dir=str(target_dir))
+
+
+def hook_helpers(hook: dict) -> list[dict]:
+    helpers = hook.get("helpers", [])
+    if helpers is None:
+        return []
+    if not isinstance(helpers, list):
+        raise HookUpdateError(f"manifest hook helpers must be a list: {hook['id']}")
+    return helpers
+
+
+def helper_source_dir(helper: dict) -> Path:
+    return ROOT / "hooks" / helper["source"]
+
+
+def helper_target_dir(helper: dict, target_dir: Path) -> Path:
+    return target_dir / helper["target"]
+
+
+def helper_source_files(helper: dict) -> list[Path]:
+    source_dir = helper_source_dir(helper)
+    if not source_dir.exists():
+        raise HookUpdateError(f"helper source does not exist: {source_dir}")
+    if not source_dir.is_dir():
+        raise HookUpdateError(f"helper source is not a directory: {source_dir}")
+    return sorted(path for path in source_dir.rglob("*") if path.is_file())
+
+
+def helper_executable_paths(helper: dict) -> set[Path]:
+    return {Path(value) for value in helper.get("executables", [])}
+
+
+def codex_resource_dirs() -> list[Path]:
+    override = os.environ.get(CODEX_RESOURCES_ENV)
+    if override:
+        return [Path(os.path.expanduser(override))]
+    return [CODEX_APP_RESOURCES]
+
+
+def codex_icon_source() -> Path | None:
+    for resource_dir in codex_resource_dirs():
+        for icon_name in CODEX_ICON_NAMES:
+            icon_path = resource_dir / icon_name
+            if icon_path.exists():
+                return icon_path
+    return None
+
+
+def install_helper_icon(helper_dir: Path) -> None:
+    resources_dir = helper_dir / "CodexNotify.app" / "Contents" / "Resources"
+    icon_target = resources_dir / "icon.icns"
+    icon_source = codex_icon_source()
+    if icon_source:
+        resources_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(icon_source, icon_target)
+        return
+    if icon_target.exists():
+        icon_target.unlink()
+    print("warning: Codex icon not found; helper will use osascript fallback")
+
+
+def copy_helper_files(helper: dict, target_dir: Path) -> None:
+    source_dir = helper_source_dir(helper)
+    target_helper_dir = helper_target_dir(helper, target_dir)
+    executable_paths = helper_executable_paths(helper)
+    for source in helper_source_files(helper):
+        relative = source.relative_to(source_dir)
+        target = target_helper_dir / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        if relative in executable_paths:
+            mode = target.stat().st_mode
+            target.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    install_helper_icon(target_helper_dir)
 
 
 def source_target_drift(hook: dict, target_dir: Path) -> dict | None:
@@ -228,6 +305,32 @@ def source_target_drift(hook: dict, target_dir: Path) -> dict | None:
     if filecmp.cmp(source, target, shallow=False):
         return None
     return {"hook": hook, "source": source, "target": target}
+
+
+def helper_source_target_drifts(selected_hooks: list[dict], target_dir: Path) -> list[dict]:
+    drifts = []
+    for hook in selected_hooks:
+        for helper in hook_helpers(hook):
+            source_dir = helper_source_dir(helper)
+            target_helper_dir = helper_target_dir(helper, target_dir)
+            for source in helper_source_files(helper):
+                target = target_helper_dir / source.relative_to(source_dir)
+                if not target.exists() or not filecmp.cmp(source, target, shallow=False):
+                    drifts.append({"hook": hook, "helper": helper, "source": source, "target": target})
+    return drifts
+
+
+def managed_helper_source_target_drifts(
+    selected_hooks: list[dict],
+    target_dir: Path,
+    managed_targets: set[tuple[str, Path]],
+) -> list[dict]:
+    drifts = []
+    for hook in selected_hooks:
+        if (hook["id"], target_dir / hook["target"]) not in managed_targets:
+            continue
+        drifts.extend(helper_source_target_drifts([hook], target_dir))
+    return drifts
 
 
 def managed_source_target_drifts(
@@ -301,6 +404,8 @@ def install_plan(
         target = target_dir / hook["target"]
         if not source.exists():
             raise HookUpdateError(f"hook source does not exist: {source}")
+        for helper in hook_helpers(hook):
+            helper_source_files(helper)
         target_is_managed = (hook["id"], target) in managed_targets
         if not target.exists() or target_is_managed or filecmp.cmp(source, target, shallow=False):
             continue
@@ -329,6 +434,8 @@ def install_hook_files(selected_hooks: list[dict], target_dir: Path, managed_tar
         shutil.copy2(source, target)
         mode = target.stat().st_mode
         target.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        for helper in hook_helpers(hook):
+            copy_helper_files(helper, target_dir)
 
 
 def print_legacy_duplicate(entry: dict, prefix: str = "duplicate") -> None:
@@ -344,8 +451,12 @@ def print_dry_run_install(
     adopt_existing: bool,
 ) -> None:
     for drift in managed_drifts:
-        print(f"would replace managed target: {drift['target']}")
-        print(f"source differs from installed target: {drift['source']}")
+        if "helper" in drift:
+            print(f"would replace managed helper target: {drift['target']}")
+            print(f"helper source differs from installed target: {drift['source']}")
+        else:
+            print(f"would replace managed target: {drift['target']}")
+            print(f"source differs from installed target: {drift['source']}")
     if adopt_existing:
         for adoption in adoptions:
             hook = adoption["hook"]
@@ -384,15 +495,19 @@ def print_hook_list(manifest: dict) -> None:
 def print_status(manifest: dict, selected_hooks: list[dict], target_dir: Path) -> None:
     config = read_hooks_json()
     duplicate_entries = legacy_duplicate_entries(config, selected_hooks, target_dir)
+    managed_targets = managed_hook_targets(config, selected_hooks, target_dir)
     for hook in selected_hooks:
         installed = (target_dir / hook["target"]).exists()
         enabled = hook_is_enabled(config, hook["id"])
         drift = source_target_drift(hook, target_dir)
+        helper_drifts = helper_source_target_drifts([hook], target_dir) if (hook["id"], target_dir / hook["target"]) in managed_targets else []
         state = []
         state.append("installed" if installed else "not installed")
         state.append("enabled" if enabled else "disabled")
         if drift:
             state.append("source drift")
+        if helper_drifts:
+            state.append("helper source drift")
         duplicates = [entry for entry in duplicate_entries if entry["hook_id"] == hook["id"]]
         if duplicates:
             state.append(f"duplicate legacy entries: {len(duplicates)}")
@@ -400,6 +515,9 @@ def print_status(manifest: dict, selected_hooks: list[dict], target_dir: Path) -
         if drift:
             print(f"target differs from manifest source: {drift['target']}")
             print(f"manifest source: {drift['source']}")
+        for helper_drift in helper_drifts:
+            print(f"helper target differs from manifest source: {helper_drift['target']}")
+            print(f"helper manifest source: {helper_drift['source']}")
         for entry in sorted(duplicates, key=lambda item: (item["event"], item["command"])):
             print_legacy_duplicate(entry)
 
@@ -410,6 +528,7 @@ def install(manifest: dict, selected_hooks: list[dict], target_dir: Path, dry_ru
     managed_targets = managed_hook_targets(config, selected_hooks, target_dir)
     adoptions, duplicate_entries = install_plan(config, selected_hooks, target_dir, managed_targets, adopt_existing)
     managed_drifts = managed_source_target_drifts(selected_hooks, target_dir, managed_targets)
+    managed_drifts.extend(managed_helper_source_target_drifts(selected_hooks, target_dir, managed_targets))
 
     if dry_run:
         print_dry_run_install(selected_hooks, target_dir, adoptions, duplicate_entries, managed_drifts, adopt_existing)

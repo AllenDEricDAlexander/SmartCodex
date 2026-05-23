@@ -8,7 +8,21 @@
       "description": "Desktop notifications for Codex permission and subagent lifecycle events.",
       "source": "notify/codex_notify.py",
       "target": "codex_notify.py",
+      "helpers": [
+        {
+          "id": "macos_notify",
+          "source": "notify/macos_helper",
+          "target": "notify_macos_helper",
+          "entrypoint": "codex_macos_notify.py",
+          "runtime_env": "SMARTCODEX_NOTIFY_HELPER",
+          "executables": [
+            "codex_macos_notify.py",
+            "CodexNotify.app/Contents/MacOS/codex-notify-app"
+          ]
+        }
+      ],
       "events": [
+        "SessionStart",
         "UserPromptSubmit",
         "PermissionRequest",
         "SubagentStart",
@@ -16,7 +30,7 @@
         "Stop"
       ],
       "timeout": 5,
-      "command_template": "SMARTCODEX_MANAGED_HOOK={id} python3 \"{target_path}\""
+      "command_template": "SMARTCODEX_MANAGED_HOOK={id} SMARTCODEX_NOTIFY_HELPER=\"{target_dir}/notify_macos_helper/codex_macos_notify.py\" python3 \"{target_path}\""
     }
   ]
 }

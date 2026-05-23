@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Show a SmartCodex macOS notification from the helper app.")
+    parser.add_argument("--title", required=True)
+    parser.add_argument("--message", required=True)
+    parser.add_argument("--subtitle", default="")
+    parser.add_argument("--sound", default="")
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    script = f"display notification {json.dumps(args.message)} with title {json.dumps(args.title)}"
+    if args.subtitle:
+        script += f" subtitle {json.dumps(args.subtitle)}"
+    if args.sound:
+        script += f" sound name {json.dumps(args.sound)}"
+    return subprocess.run(["/usr/bin/osascript", "-e", script], check=False).returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

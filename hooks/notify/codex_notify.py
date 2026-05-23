@@ -15,18 +15,11 @@ from contextlib import contextmanager
 
 LOG_PATH = Path.home() / ".codex" / "logs" / "hooks" / "notify" / "codex_notify.jsonl"
 HOOK_TIMEOUT_SECONDS = 5.0
-SPEECH_WAIT_TIMEOUT_SECONDS = 4.0
-SPEECH_TERMINATE_TIMEOUT_SECONDS = 0.5
-SPEECH_KILL_TIMEOUT_SECONDS = 0.2
-SESSION_ID_DISPLAY_LENGTH = 12
-TURN_ID_DISPLAY_LENGTH = 11
-AGENT_ID_DISPLAY_LENGTH = 12
 CWD_DISPLAY_LENGTH = 64
 PROJECT_DISPLAY_LENGTH = 48
 AGENT_NAME_DISPLAY_LENGTH = 64
-SPEECH_AGENT_NAME_DISPLAY_LENGTH = 32
-THREAD_NAME_DISPLAY_LENGTH = 64
-SPEECH_DISPLAY_LENGTH = 180
+VISIBLE_MESSAGE_DISPLAY_LENGTH = 180
+DEFAULT_MACOS_SAY_RATE = "300"
 DETACHED_TITLE_DISPLAY_LENGTH = 120
 DETACHED_BODY_DISPLAY_LENGTH = 800
 DETACHED_SPEECH_DISPLAY_LENGTH = 240
@@ -34,12 +27,8 @@ DETACHED_EVENT_DISPLAY_LENGTH = 64
 DETACHED_TOOL_NAME_DISPLAY_LENGTH = 160
 DETACHED_NOTIFY_ARG = "--detached-notify"
 DETACHED_NOTIFY_ENV = "CODEX_NOTIFY_DETACHED_PAYLOAD"
-THREAD_NAME_FIELDS = (
-    "thread_name",
-    "thread_title",
-    "conversation_name",
-    "conversation_title",
-)
+MACOS_NOTIFY_HELPER_ENV = "SMARTCODEX_NOTIFY_HELPER"
+MACOS_NOTIFY_USE_HELPER_ENV = "SMARTCODEX_NOTIFY_USE_HELPER"
 
 
 @dataclass(frozen=True)
@@ -48,6 +37,8 @@ class HookMessage:
     body: str
     speech: str
     urgent: bool = False
+    project_source: str = ""
+    agent_source: str = ""
 
 
 def log(entry: dict) -> None:
@@ -90,9 +81,20 @@ def raw_summary(raw: str | None) -> dict:
     return {"present": True, "length": len(raw)}
 
 
-def log_backend_success(data: dict, message: HookMessage) -> None:
+def log_backend_success(
+    data: dict,
+    message: HookMessage,
+    project_source: str | None = None,
+    agent_source: str | None = None,
+) -> None:
     record = {"type": "backend_success", **event_summary(data)}
     record["message"] = message_summary(message)
+    source = project_source if project_source is not None else message.project_source
+    if source:
+        record["project_source"] = shorten(source, 80)
+    source = agent_source if agent_source is not None else message.agent_source
+    if source:
+        record["agent_source"] = shorten(source, 80)
     log(record)
 
 
@@ -124,11 +126,6 @@ def shorten(value, limit: int = 220) -> str:
     return text[: limit - 1] + "…"
 
 
-def short_id(value, limit: int) -> str:
-    text = " ".join(str(value or "").split())
-    return text[:limit]
-
-
 def short_cwd(cwd) -> str:
     text = " ".join(str(cwd or "").split())
     if not text:
@@ -154,63 +151,6 @@ def project_label(cwd) -> str:
     if not text:
         return ""
     return shorten(Path(text).name or text, PROJECT_DISPLAY_LENGTH)
-
-
-def readable_thread_name(data: dict) -> str:
-    # 只信任 hook payload 的顶层显式命名字段，不从 prompt/transcript/tool_input 推断线程名。
-    for field in THREAD_NAME_FIELDS:
-        value = data.get(field)
-        if isinstance(value, (str, int, float)):
-            text = shorten(value, THREAD_NAME_DISPLAY_LENGTH)
-            if text:
-                return text
-    return ""
-
-
-def turn_label(data: dict) -> str:
-    return short_id(data.get("turn_id"), TURN_ID_DISPLAY_LENGTH)
-
-
-def thread_label(data: dict) -> str:
-    name = readable_thread_name(data)
-    if name:
-        return name
-
-    session_id = short_id(data.get("session_id"), SESSION_ID_DISPLAY_LENGTH)
-    if session_id:
-        return f"会话 {session_id}"
-
-    turn_id = turn_label(data)
-    if turn_id:
-        return f"回合 {turn_id}"
-
-    return ""
-
-
-def context_lines(data: dict) -> list[str]:
-    # 只使用 hook 的安全上下文字段，避免把 prompt/转写/工具输入带进通知。
-    lines = []
-    project = project_label(data.get("cwd"))
-    cwd = short_cwd(data.get("cwd"))
-    if project:
-        line = f"项目：{project}"
-        if cwd and cwd != project:
-            line += f" ({cwd})"
-        lines.append(line)
-
-    thread = thread_label(data)
-    turn_id = turn_label(data)
-    if thread:
-        lines.append(f"线程：{thread}")
-    if turn_id and thread != f"回合 {turn_id}":
-        lines.append(f"回合：{turn_id}")
-    return lines
-
-
-def body_text(lines: list[str], data: dict) -> str:
-    body_lines = list(lines)
-    body_lines.extend(context_lines(data))
-    return "\n".join(body_lines)
 
 
 def run_detached(cmd: list[str], env: dict | None = None) -> None:
@@ -276,22 +216,7 @@ def run_speech(cmd: list[str]) -> None:
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         with speech_lock():
             process = subprocess.Popen(cmd, **kwargs)
-            try:
-                process.wait(timeout=SPEECH_WAIT_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired as exc:
-                log_error("run_speech_timeout", exc, backend=backend)
-                try:
-                    process.terminate()
-                    process.wait(timeout=SPEECH_TERMINATE_TIMEOUT_SECONDS)
-                except subprocess.TimeoutExpired as terminate_exc:
-                    log_error("run_speech_terminate_timeout", terminate_exc, backend=backend)
-                    try:
-                        process.kill()
-                        process.wait(timeout=SPEECH_KILL_TIMEOUT_SECONDS)
-                    except Exception as kill_exc:
-                        log_error("run_speech_kill", kill_exc, backend=backend)
-                except Exception as terminate_exc:
-                    log_error("run_speech_terminate", terminate_exc, backend=backend)
+            process.wait()
     except Exception as exc:
         log_error("run_speech", exc, backend=backend)
 
@@ -308,17 +233,30 @@ def urgent_modal_enabled() -> bool:
     return os.environ.get("CODEX_NOTIFY_URGENT_MODAL", "").lower() in ("1", "true", "yes", "on")
 
 
+def macos_notify_helper_path() -> str:
+    if os.environ.get(MACOS_NOTIFY_USE_HELPER_ENV, "").lower() not in ("1", "true", "yes", "on"):
+        return ""
+
+    helper = os.environ.get(MACOS_NOTIFY_HELPER_ENV, "")
+    if not helper:
+        return ""
+
+    path = Path(helper).expanduser()
+    if path.is_file():
+        return str(path)
+    return ""
+
+
 def speak(text: str) -> None:
     system = platform.system()
 
     if system == "Darwin" and shutil.which("say"):
         cmd = ["say"]
         voice = os.environ.get("CODEX_NOTIFY_VOICE")
-        rate = os.environ.get("CODEX_NOTIFY_RATE")
+        rate = os.environ.get("CODEX_NOTIFY_RATE") or DEFAULT_MACOS_SAY_RATE
         if voice:
             cmd += ["-v", voice]
-        if rate:
-            cmd += ["-r", rate]
+        cmd += ["-r", rate]
         cmd.append(text)
         run_speech(cmd)
         return
@@ -342,19 +280,29 @@ def speak(text: str) -> None:
 
 
 def notify_macos(title: str, body: str, urgent: bool) -> None:
-    if not shutil.which("osascript"):
-        return
+    helper = macos_notify_helper_path()
+    if helper:
+        run_detached([
+            sys.executable,
+            helper,
+            "--title",
+            title,
+            "--message",
+            body,
+        ])
 
     safe_title = applescript_quote(title)
     safe_body = applescript_quote(body)
 
-    run_detached([
-        "osascript",
-        "-e",
-        f'display notification "{safe_body}" with title "{safe_title}"'
-    ])
+    has_osascript = shutil.which("osascript")
+    if not helper and has_osascript:
+        run_detached([
+            "osascript",
+            "-e",
+            f'display notification "{safe_body}" with title "{safe_title}"'
+        ])
 
-    if urgent and urgent_modal_enabled():
+    if urgent and urgent_modal_enabled() and has_osascript:
         dialog = (
             "beep 2\n"
             f'display dialog "{safe_body}" '
@@ -436,6 +384,8 @@ def detached_payload(data: dict, message: HookMessage) -> str:
             "body": shorten(message.body, DETACHED_BODY_DISPLAY_LENGTH),
             "speech": shorten(message.speech, DETACHED_SPEECH_DISPLAY_LENGTH),
             "urgent": message.urgent,
+            "project_source": shorten(message.project_source, 80),
+            "agent_source": shorten(message.agent_source, 80),
         },
     }
     return json.dumps(payload, ensure_ascii=False)
@@ -448,6 +398,8 @@ def message_from_detached_payload(payload: dict) -> HookMessage:
         body=str(message.get("body", "")),
         speech=str(message.get("speech", "")),
         urgent=bool(message.get("urgent", False)),
+        project_source=str(message.get("project_source", "")),
+        agent_source=str(message.get("agent_source", "")),
     )
 
 
@@ -486,35 +438,6 @@ def read_hook_input() -> dict:
         return {}
 
 
-def tool_detail(tool_input) -> str:
-    if isinstance(tool_input, dict):
-        desc = tool_input.get("description")
-        command = tool_input.get("command")
-        if desc:
-            return "用途：已收到"
-        if command:
-            return "参数：已收到"
-        return "参数：已收到"
-    if tool_input:
-        return "参数：已收到"
-    return ""
-
-
-def agent_name(data: dict, limit: int = AGENT_NAME_DISPLAY_LENGTH) -> str:
-    return shorten(
-        data.get("agent_type")
-        or data.get("agent_id")
-        or data.get("subagent_type")
-        or data.get("subagent_id")
-        or "未知 subagent",
-        limit,
-    )
-
-
-def has_agent_context(data: dict) -> bool:
-    return any(data.get(key) for key in ("agent_type", "agent_id", "subagent_type", "subagent_id"))
-
-
 def is_agent_completion_event(data: dict) -> bool:
     event = data.get("hook_event_name", "")
     return event == "SubagentStop"
@@ -530,102 +453,129 @@ def write_json_stdout() -> None:
     sys.stdout.flush()
 
 
-def agent_context_lines(data: dict) -> list[str]:
-    lines = [f"角色：{agent_name(data)}"]
-    agent_id = short_id(data.get("agent_id") or data.get("subagent_id"), AGENT_ID_DISPLAY_LENGTH)
-    if agent_id:
-        lines.append(f"Agent：{agent_id}")
-    return lines
-
-
-def speech_context(data: dict, include_agent: bool = False) -> str:
-    # 语音只拼接安全短上下文，不读取 prompt/transcript/tool_input/assistant message。
-    parts = []
+def resolved_project(data: dict) -> tuple[str, str]:
     project = project_label(data.get("cwd"))
     if project:
-        parts.append(f"项目 {project}")
+        return project, "payload.cwd"
 
-    thread = thread_label(data)
-    turn_id = turn_label(data)
-    if thread:
-        parts.append(f"线程 {thread}")
-    if turn_id and thread != f"回合 {turn_id}":
-        parts.append(f"回合 {turn_id}")
+    try:
+        project = project_label(Path.cwd())
+        if project:
+            return project, "process.cwd"
+    except Exception:
+        pass
 
-    if include_agent:
-        agent_type = shorten(
-            data.get("agent_type") or data.get("subagent_type") or "",
-            SPEECH_AGENT_NAME_DISPLAY_LENGTH,
-        )
-        agent_id = short_id(data.get("agent_id") or data.get("subagent_id"), AGENT_ID_DISPLAY_LENGTH)
-        if agent_type:
-            parts.append(f"角色 {agent_type}")
-        if agent_id:
-            parts.append(f"Agent {agent_id}")
-        if not agent_type and not agent_id:
-            parts.append("角色 未知 subagent")
+    project = project_label(os.environ.get("PWD"))
+    if project:
+        return project, "env.PWD"
 
-    return "，".join(parts)
+    return "Unknown project", "unknown"
 
 
-def speech_text(data: dict, action: str, include_agent: bool = False) -> str:
-    context = speech_context(data, include_agent=include_agent) or "Codex"
-    context_limit = max(1, SPEECH_DISPLAY_LENGTH - len(action) - 2)
-    return f"{shorten(context, context_limit)}，{action}。"
+def visible_project(data: dict) -> str:
+    return resolved_project(data)[0]
 
 
-def permission_speech(data: dict) -> str:
-    tool = shorten(data.get("tool_name") or "未知工具", DETACHED_TOOL_NAME_DISPLAY_LENGTH)
-    return speech_text(data, f"工具 {tool} 请求权限，等待确认")
+def is_uuid_like(value) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    compact = text.replace("-", "")
+    if len(compact) < 16:
+        return False
+    return all(char in "0123456789abcdef" for char in compact)
+
+
+def resolved_agent(data: dict) -> tuple[str, str]:
+    event = data.get("hook_event_name", "")
+    if event not in ("SubagentStart", "SubagentStop"):
+        return "parent", "parent_event"
+
+    for field in ("agent_type", "subagent_type", "agent_name", "name"):
+        value = data.get(field)
+        if value and not is_uuid_like(value):
+            return shorten(value, AGENT_NAME_DISPLAY_LENGTH), field
+    return "subagent", "fallback"
+
+
+def visible_agent(data: dict) -> str:
+    return resolved_agent(data)[0]
+
+
+def display_action(data: dict) -> str:
+    event = data.get("hook_event_name", "")
+    if event == "SessionStart":
+        return "Session started"
+    if event in ("UserPromptSubmit", "SubagentStart"):
+        return "Task started"
+    if event in ("Stop", "SubagentStop"):
+        return "Task finished"
+    if event == "PermissionRequest":
+        return "Permission requested"
+    return ""
+
+
+def speech_action(data: dict) -> str:
+    event = data.get("hook_event_name", "")
+    if event == "SessionStart":
+        return "session started"
+    if event in ("UserPromptSubmit", "SubagentStart"):
+        return "task started"
+    if event in ("Stop", "SubagentStop"):
+        return "task finished"
+    if event == "PermissionRequest":
+        return "permission requested"
+    return ""
+
+
+def speech_agent(agent: str) -> str:
+    if agent == "parent":
+        return "parent agent"
+    if agent == "subagent":
+        return "subagent"
+    return f"{agent.replace('-', ' ').replace('_', ' ')} agent"
+
+
+def visible_message_text(data: dict) -> str:
+    action = display_action(data)
+    if not action:
+        return ""
+
+    text = f"{visible_project(data)} | {visible_agent(data)} | {action}"
+    return shorten(text, VISIBLE_MESSAGE_DISPLAY_LENGTH)
+
+
+def speech_message_text(data: dict) -> str:
+    action = speech_action(data)
+    if not action:
+        return ""
+
+    project = visible_project(data)
+    speech_project = "unknown project" if project == "Unknown project" else project
+    text = f"Project {speech_project}, {speech_agent(visible_agent(data))}, {action}."
+    return shorten(text, VISIBLE_MESSAGE_DISPLAY_LENGTH)
+
+
+def visible_hook_message(data: dict, urgent: bool = False) -> HookMessage | None:
+    display = visible_message_text(data)
+    speech = speech_message_text(data)
+    if not display or not speech:
+        return None
+    return HookMessage(
+        title=display,
+        body=display,
+        speech=speech,
+        urgent=urgent,
+        project_source=resolved_project(data)[1],
+        agent_source=resolved_agent(data)[1],
+    )
 
 
 def build_message(data: dict) -> HookMessage | None:
     event = data.get("hook_event_name", "")
 
-    if event == "UserPromptSubmit":
-        return HookMessage(
-            title="Codex 任务已开始",
-            body=body_text(["正在处理你的请求。"], data),
-            speech=speech_text(data, "父任务已开始"),
-        )
-
-    if event == "Stop":
-        return HookMessage(
-            title="Codex 任务已结束",
-            body=body_text(["可以回到 Codex 查看结果。"], data),
-            speech=speech_text(data, "父任务已结束，可以查看结果"),
-        )
-
-    if event == "SubagentStart":
-        lines = agent_context_lines(data)
-        lines.append("正在处理分配给它的工作。")
-        return HookMessage(
-            title="Codex 子任务已启动",
-            body=body_text(lines, data),
-            speech=speech_text(data, "子任务已开始", include_agent=True),
-        )
-
-    if event == "PermissionRequest":
-        tool = data.get("tool_name") or "未知工具"
-        detail = tool_detail(data.get("tool_input"))
-        lines = ["需要你回到 Codex 处理权限弹窗。", f"工具：{tool}"]
-        if detail:
-            lines.append(detail)
-        return HookMessage(
-            title="Codex 等你确认权限",
-            body=body_text(lines, data),
-            speech=permission_speech(data),
-            urgent=True,
-        )
-
-    if is_agent_completion_event(data):
-        lines = agent_context_lines(data)
-        lines.append("可以回到 Codex 查看结果。")
-        return HookMessage(
-            title="Codex 子任务已完成",
-            body=body_text(lines, data),
-            speech=speech_text(data, "子任务已完成，可以查看结果", include_agent=True),
-        )
+    if event in ("SessionStart", "UserPromptSubmit", "Stop", "SubagentStart", "SubagentStop", "PermissionRequest"):
+        return visible_hook_message(data, urgent=(event == "PermissionRequest"))
 
     return None
 
