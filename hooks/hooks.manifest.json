@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "manager": "SmartCodex",
+  "default_target_dir": "~/.codex/hooks",
+  "hooks": [
+    {
+      "id": "notify",
+      "description": "Desktop notifications for Codex permission and subagent lifecycle events.",
+      "source": "notify/codex_notify.py",
+      "target": "codex_notify.py",
+      "events": [
+        "UserPromptSubmit",
+        "PermissionRequest",
+        "SubagentStart",
+        "SubagentStop",
+        "Stop"
+      ],
+      "timeout": 5,
+      "command_template": "SMARTCODEX_MANAGED_HOOK={id} python3 \"{target_path}\""
+    }
+  ]
+}
