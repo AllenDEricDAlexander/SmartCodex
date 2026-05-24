@@ -1,5 +1,6 @@
 import json
 import os
+import plistlib
 import subprocess
 import sys
 import tempfile
@@ -45,9 +46,67 @@ class UpdateHooksScriptTest(unittest.TestCase):
     def codex_resources(self, tmp: str, icon_name="icon.icns") -> Path:
         resources = Path(tmp) / "Codex.app" / "Contents" / "Resources"
         resources.mkdir(parents=True)
+        with (resources.parent / "Info.plist").open("wb") as f:
+            plistlib.dump({"CFBundleIconFile": "electron.icns"}, f)
         if icon_name:
             (resources / icon_name).write_bytes(b"fake icns")
         return resources
+
+    def fake_osacompile(self, tmp: str) -> tuple[Path, Path]:
+        bin_dir = Path(tmp) / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        log_path = Path(tmp) / "osacompile.log"
+        fake = bin_dir / "osacompile"
+        fake.write_text(
+            "#!/bin/sh\n"
+            "out=''\n"
+            "src=''\n"
+            "while [ \"$#\" -gt 0 ]; do\n"
+            "  if [ \"$1\" = '-o' ]; then\n"
+            "    shift\n"
+            "    out=\"$1\"\n"
+            "  else\n"
+            "    src=\"$1\"\n"
+            "  fi\n"
+            "  shift\n"
+            "done\n"
+            "mkdir -p \"$out/Contents/MacOS\" \"$out/Contents/Resources\"\n"
+            "printf '%s -> %s\\n' \"$src\" \"$out\" > " + str(log_path) + "\n"
+            "printf '#!/bin/sh\\n' > \"$out/Contents/MacOS/applet\"\n"
+            "chmod +x \"$out/Contents/MacOS/applet\"\n",
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+        return bin_dir, log_path
+
+    def fake_swiftc(self, tmp: str) -> tuple[Path, Path]:
+        bin_dir = Path(tmp) / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        log_path = Path(tmp) / "swiftc.log"
+        fake = bin_dir / "swiftc"
+        fake.write_text(
+            "#!/bin/sh\n"
+            "out=''\n"
+            "src=''\n"
+            "while [ \"$#\" -gt 0 ]; do\n"
+            "  if [ \"$1\" = '-o' ]; then\n"
+            "    shift\n"
+            "    out=\"$1\"\n"
+            "  else\n"
+            "    case \"$1\" in\n"
+            "      *.swift) src=\"$1\" ;;\n"
+            "    esac\n"
+            "  fi\n"
+            "  shift\n"
+            "done\n"
+            "mkdir -p \"$(dirname \"$out\")\"\n"
+            "printf '%s -> %s\\n' \"$src\" \"$out\" > " + str(log_path) + "\n"
+            "printf '#!/bin/sh\\n' > \"$out\"\n"
+            "chmod +x \"$out\"\n",
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+        return bin_dir, log_path
 
     def test_manifest_is_available_for_cli_operations(self):
         self.assertTrue(MANIFEST_PATH.exists())
@@ -83,6 +142,8 @@ class UpdateHooksScriptTest(unittest.TestCase):
         self.assertEqual("notify_macos_helper", helper["target"])
         self.assertEqual("codex_macos_notify.py", helper["entrypoint"])
         self.assertEqual("SMARTCODEX_NOTIFY_HELPER", helper["runtime_env"])
+        self.assertIn("CodexNotifyApp.swift", helper["native_sources"])
+        self.assertIn("codex_notify.applescript", helper["app_sources"])
         self.assertIn("SMARTCODEX_NOTIFY_HELPER=", notify_hook["command_template"])
 
     def test_notify_manifest_does_not_depend_on_unsupported_agent_stop(self):
@@ -167,30 +228,64 @@ class UpdateHooksScriptTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             resources = self.codex_resources(tmp, "icon.icns")
+            bin_dir, compile_log = self.fake_swiftc(tmp)
 
             result = self.run_script(
                 home,
                 "install",
                 "notify",
-                extra_env={"SMARTCODEX_CODEX_RESOURCES_DIR": str(resources)},
+                extra_env={
+                    "PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", ""),
+                    "SMARTCODEX_CODEX_RESOURCES_DIR": str(resources),
+                },
             )
 
             self.assertEqual(0, result.returncode, result.stderr)
             helper_dir = home / ".codex" / "hooks" / "notify_macos_helper"
             helper_script = helper_dir / "codex_macos_notify.py"
-            app_script = helper_dir / "CodexNotify.app" / "Contents" / "MacOS" / "codex-notify-app"
+            app_script = helper_dir / "CodexNotify.app" / "Contents" / "MacOS" / "CodexNotify"
             app_icon = helper_dir / "CodexNotify.app" / "Contents" / "Resources" / "icon.icns"
+            app_plist = helper_dir / "CodexNotify.app" / "Contents" / "Info.plist"
             self.assertTrue(helper_script.exists())
             self.assertTrue(os.access(helper_script, os.X_OK))
             self.assertTrue(app_script.exists())
             self.assertTrue(os.access(app_script, os.X_OK))
             self.assertEqual(b"fake icns", app_icon.read_bytes())
+            with app_plist.open("rb") as f:
+                plist = plistlib.load(f)
+            self.assertEqual("Codex Notify", plist["CFBundleDisplayName"])
+            self.assertEqual("com.smartcodex.notify", plist["CFBundleIdentifier"])
+            self.assertEqual("CodexNotify", plist["CFBundleExecutable"])
+            self.assertEqual("icon", plist["CFBundleIconFile"])
+            self.assertIn("CodexNotifyApp.swift", compile_log.read_text(encoding="utf-8"))
 
             updated = self.load_hooks_json(home)
             commands = self.managed_commands(updated)
             self.assertTrue(all(f'SMARTCODEX_NOTIFY_HELPER="{helper_script.resolve()}"' in command for command in commands))
             self.assertNotIn("terminal-notifier", json.dumps(updated))
             self.assertNotIn("terminal-notifier", helper_script.read_text(encoding="utf-8"))
+
+    def test_install_prefers_codex_bundle_icon_name_from_info_plist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            resources = self.codex_resources(tmp, None)
+            (resources / "icon.icns").write_bytes(b"generic icon")
+            (resources / "electron.icns").write_bytes(b"codex app icon")
+            bin_dir, _ = self.fake_swiftc(tmp)
+
+            result = self.run_script(
+                home,
+                "install",
+                "notify",
+                extra_env={
+                    "PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", ""),
+                    "SMARTCODEX_CODEX_RESOURCES_DIR": str(resources),
+                },
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            app_icon = home / ".codex" / "hooks" / "notify_macos_helper" / "CodexNotify.app" / "Contents" / "Resources" / "icon.icns"
+            self.assertEqual(b"codex app icon", app_icon.read_bytes())
 
     def test_macos_helper_launches_installed_app_when_icon_is_available(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -208,7 +303,19 @@ class UpdateHooksScriptTest(unittest.TestCase):
             bin_dir.mkdir()
             open_log = Path(tmp) / "open.log"
             fake_open = bin_dir / "open"
-            fake_open.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" > {open_log!s}\n", encoding="utf-8")
+            fake_open.write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$@\" > {open_log!s}\n"
+                "while [ \"$#\" -gt 0 ]; do\n"
+                "  if [ \"$1\" = \"--status-file\" ]; then\n"
+                "    shift\n"
+                "    printf 'ok' > \"$1\"\n"
+                "    exit 0\n"
+                "  fi\n"
+                "  shift\n"
+                "done\n",
+                encoding="utf-8",
+            )
             fake_open.chmod(0o755)
             helper_script = home / ".codex" / "hooks" / "notify_macos_helper" / "codex_macos_notify.py"
 
@@ -224,7 +331,12 @@ class UpdateHooksScriptTest(unittest.TestCase):
             )
 
             self.assertEqual(0, result.returncode, result.stderr)
-            self.assertIn(str(helper_script.parent / "CodexNotify.app"), open_log.read_text(encoding="utf-8"))
+            open_args = open_log.read_text(encoding="utf-8")
+            self.assertIn("-g", open_args)
+            self.assertNotIn("-W", open_args)
+            self.assertIn("--status-file", open_args)
+            self.assertNotIn("-j", open_args)
+            self.assertIn(str(helper_script.parent / "CodexNotify.app"), open_args)
 
     def test_install_keeps_helper_available_when_codex_icon_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp:

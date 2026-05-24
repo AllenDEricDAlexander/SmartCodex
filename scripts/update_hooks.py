@@ -6,11 +6,14 @@ from datetime import datetime
 import filecmp
 import json
 import os
+import plistlib
 from pathlib import Path
 import shlex
 import shutil
 import stat
+import subprocess
 import sys
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +23,13 @@ MANAGED_MARKER = "SMARTCODEX_MANAGED_HOOK="
 CODEX_RESOURCES_ENV = "SMARTCODEX_CODEX_RESOURCES_DIR"
 CODEX_APP_RESOURCES = Path("/Applications/Codex.app/Contents/Resources")
 CODEX_ICON_NAMES = ("icon.icns", "electron.icns")
+MACOS_HELPER_APP_NAME = "CodexNotify.app"
+MACOS_HELPER_APP_DISPLAY_NAME = "Codex Notify"
+MACOS_HELPER_APP_BUNDLE_ID = "com.smartcodex.notify"
+MACOS_HELPER_EXECUTABLE_NAME = "CodexNotify"
+LSREGISTER_PATH = Path(
+    "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+)
 
 
 class HookUpdateError(Exception):
@@ -253,6 +263,14 @@ def helper_executable_paths(helper: dict) -> set[Path]:
     return {Path(value) for value in helper.get("executables", [])}
 
 
+def helper_app_source_paths(helper: dict) -> list[Path]:
+    return [Path(value) for value in helper.get("app_sources", [])]
+
+
+def helper_native_source_paths(helper: dict) -> list[Path]:
+    return [Path(value) for value in helper.get("native_sources", [])]
+
+
 def codex_resource_dirs() -> list[Path]:
     override = os.environ.get(CODEX_RESOURCES_ENV)
     if override:
@@ -260,26 +278,204 @@ def codex_resource_dirs() -> list[Path]:
     return [CODEX_APP_RESOURCES]
 
 
+def icon_name_with_suffix(value: str) -> str:
+    icon_name = value.strip()
+    if not icon_name:
+        return ""
+    if Path(icon_name).suffix:
+        return icon_name
+    return icon_name + ".icns"
+
+
+def codex_icon_names(resource_dir: Path) -> list[str]:
+    names = []
+    info_path = resource_dir.parent / "Info.plist"
+    if info_path.exists():
+        try:
+            with info_path.open("rb") as f:
+                plist = plistlib.load(f)
+            icon_name = icon_name_with_suffix(str(plist.get("CFBundleIconFile", "")))
+            if icon_name:
+                names.append(icon_name)
+        except Exception:
+            pass
+
+    names.extend(CODEX_ICON_NAMES)
+    deduped = []
+    for name in names:
+        if name and name not in deduped:
+            deduped.append(name)
+    return deduped
+
+
 def codex_icon_source() -> Path | None:
     for resource_dir in codex_resource_dirs():
-        for icon_name in CODEX_ICON_NAMES:
+        for icon_name in codex_icon_names(resource_dir):
             icon_path = resource_dir / icon_name
             if icon_path.exists():
                 return icon_path
     return None
 
 
-def install_helper_icon(helper_dir: Path) -> None:
-    resources_dir = helper_dir / "CodexNotify.app" / "Contents" / "Resources"
+def configure_macos_helper_app(app_dir: Path, executable_name: str) -> None:
+    contents_dir = app_dir / "Contents"
+    plist_path = contents_dir / "Info.plist"
+    plist = {}
+    if plist_path.exists():
+        try:
+            with plist_path.open("rb") as f:
+                plist = plistlib.load(f)
+        except Exception:
+            plist = {}
+
+    plist.update(
+        {
+            "CFBundleDisplayName": MACOS_HELPER_APP_DISPLAY_NAME,
+            "CFBundleName": MACOS_HELPER_APP_DISPLAY_NAME,
+            "CFBundleExecutable": executable_name,
+            "CFBundleIdentifier": MACOS_HELPER_APP_BUNDLE_ID,
+            "CFBundleIconFile": "icon",
+            "CFBundlePackageType": "APPL",
+            "CFBundleShortVersionString": "1.0",
+            "CFBundleVersion": datetime.now().strftime("%Y%m%d%H%M%S"),
+        }
+    )
+    contents_dir.mkdir(parents=True, exist_ok=True)
+    with plist_path.open("wb") as f:
+        plistlib.dump(plist, f)
+
+
+def codesign_macos_helper_app(app_dir: Path) -> None:
+    codesign = shutil.which("codesign")
+    if not codesign:
+        return
+    subprocess.run(
+        [codesign, "--force", "--deep", "--sign", "-", str(app_dir)],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def compile_macos_native_helper_app(helper: dict, helper_dir: Path) -> bool:
+    native_sources = helper_native_source_paths(helper)
+    if not native_sources:
+        return False
+
+    source = next((helper_dir / path for path in native_sources if (helper_dir / path).exists()), None)
+    if source is None:
+        raise HookUpdateError(f"helper native source does not exist: {native_sources[0]}")
+
+    compiler = shutil.which("swiftc")
+    if not compiler:
+        print("warning: swiftc not found; helper will use osascript fallback")
+        return False
+
+    app_dir = helper_dir / MACOS_HELPER_APP_NAME
+    if app_dir.exists():
+        shutil.rmtree(app_dir)
+
+    executable = app_dir / "Contents" / "MacOS" / MACOS_HELPER_EXECUTABLE_NAME
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    module_cache = Path(tempfile.gettempdir()) / "smartcodex-swift-module-cache"
+    module_cache.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        [
+            compiler,
+            str(source),
+            "-o",
+            str(executable),
+            "-framework",
+            "UserNotifications",
+            "-module-cache-path",
+            str(module_cache),
+        ],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        if detail:
+            detail = ": " + detail.splitlines()[-1]
+        print("warning: failed to compile native Codex notification helper app" + detail)
+        return False
+
+    mode = executable.stat().st_mode
+    executable.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    configure_macos_helper_app(app_dir, MACOS_HELPER_EXECUTABLE_NAME)
+    codesign_macos_helper_app(app_dir)
+    return True
+
+
+def compile_macos_applescript_helper_app(helper: dict, helper_dir: Path) -> bool:
+    app_sources = helper_app_source_paths(helper)
+    if not app_sources:
+        return False
+
+    source = next((helper_dir / path for path in app_sources if (helper_dir / path).exists()), None)
+    if source is None:
+        raise HookUpdateError(f"helper app source does not exist: {app_sources[0]}")
+
+    compiler = shutil.which("osacompile")
+    if not compiler:
+        print("warning: osacompile not found; helper will use osascript fallback")
+        return False
+
+    app_dir = helper_dir / MACOS_HELPER_APP_NAME
+    if app_dir.exists():
+        shutil.rmtree(app_dir)
+
+    result = subprocess.run(
+        [compiler, "-o", str(app_dir), str(source)],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        if detail:
+            detail = ": " + detail.splitlines()[-1]
+        print("warning: failed to compile Codex notification helper app" + detail)
+        return False
+
+    configure_macos_helper_app(app_dir, "applet")
+    codesign_macos_helper_app(app_dir)
+    return True
+
+
+def compile_macos_helper_app(helper: dict, helper_dir: Path) -> bool:
+    if compile_macos_native_helper_app(helper, helper_dir):
+        return True
+    return compile_macos_applescript_helper_app(helper, helper_dir)
+
+
+def install_helper_icon(helper_dir: Path) -> bool:
+    resources_dir = helper_dir / MACOS_HELPER_APP_NAME / "Contents" / "Resources"
     icon_target = resources_dir / "icon.icns"
     icon_source = codex_icon_source()
     if icon_source:
         resources_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(icon_source, icon_target)
-        return
+        return True
     if icon_target.exists():
         icon_target.unlink()
     print("warning: Codex icon not found; helper will use osascript fallback")
+    return False
+
+
+def register_macos_helper_app(helper_dir: Path) -> None:
+    app_dir = helper_dir / MACOS_HELPER_APP_NAME
+    if not app_dir.exists() or not LSREGISTER_PATH.exists():
+        return
+    subprocess.run(
+        [str(LSREGISTER_PATH), "-f", str(app_dir)],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 def copy_helper_files(helper: dict, target_dir: Path) -> None:
@@ -294,7 +490,9 @@ def copy_helper_files(helper: dict, target_dir: Path) -> None:
         if relative in executable_paths:
             mode = target.stat().st_mode
             target.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    install_helper_icon(target_helper_dir)
+    if compile_macos_helper_app(helper, target_helper_dir):
+        install_helper_icon(target_helper_dir)
+        register_macos_helper_app(target_helper_dir)
 
 
 def source_target_drift(hook: dict, target_dir: Path) -> dict | None:

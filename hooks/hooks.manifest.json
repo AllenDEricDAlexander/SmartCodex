@@ -15,9 +15,14 @@
           "target": "notify_macos_helper",
           "entrypoint": "codex_macos_notify.py",
           "runtime_env": "SMARTCODEX_NOTIFY_HELPER",
+          "native_sources": [
+            "CodexNotifyApp.swift"
+          ],
+          "app_sources": [
+            "codex_notify.applescript"
+          ],
           "executables": [
-            "codex_macos_notify.py",
-            "CodexNotify.app/Contents/MacOS/codex-notify-app"
+            "codex_macos_notify.py"
           ]
         }
       ],

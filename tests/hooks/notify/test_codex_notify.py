@@ -72,8 +72,8 @@ class CodexNotifyMessageTest(unittest.TestCase):
 
         self.assert_visible_message(
             message,
-            "SmartReader | parent | Session started",
-            "Project SmartReader, parent agent, session started.",
+            'Project "SmartReader", agent "parent", session started.',
+            "",
         )
 
     def test_user_prompt_submit_message_is_english_parent_task_start(self):
@@ -89,8 +89,8 @@ class CodexNotifyMessageTest(unittest.TestCase):
 
         self.assert_visible_message(
             message,
-            "SmartReader | parent | Task started",
-            "Project SmartReader, parent agent, task started.",
+            'Project "SmartReader", agent "parent", task started.',
+            'Project "SmartReader", agent "parent", task started.',
         )
         self.assert_private_context_not_visible("\n".join((message.title, message.body, message.speech)))
 
@@ -111,8 +111,8 @@ class CodexNotifyMessageTest(unittest.TestCase):
 
         self.assert_visible_message(
             message,
-            "SmartReader | parent | Permission requested",
-            "Project SmartReader, parent agent, permission requested.",
+            'Project "SmartReader", agent "parent", permission requested for "functions.exec_command".',
+            'Project "SmartReader", agent "parent", permission requested for "functions.exec_command".',
             urgent=True,
         )
         self.assert_private_context_not_visible("\n".join((message.title, message.body, message.speech)))
@@ -129,8 +129,8 @@ class CodexNotifyMessageTest(unittest.TestCase):
 
         self.assert_visible_message(
             message,
-            "SmartReader | parent | Task finished",
-            "Project SmartReader, parent agent, task finished.",
+            'Project "SmartReader", agent "parent", task finished.',
+            'Project "SmartReader", agent "parent", task finished.',
         )
         self.assert_private_context_not_visible("\n".join((message.title, message.body, message.speech)))
 
@@ -147,8 +147,8 @@ class CodexNotifyMessageTest(unittest.TestCase):
 
         self.assert_visible_message(
             message,
-            "SmartReader | fullstack-developer | Task started",
-            "Project SmartReader, fullstack developer agent, task started.",
+            'Project "SmartReader", agent "fullstack-developer", task started.',
+            'Project "SmartReader", agent "fullstack-developer", task started.',
         )
         self.assert_private_context_not_visible("\n".join((message.title, message.body, message.speech)))
 
@@ -165,8 +165,8 @@ class CodexNotifyMessageTest(unittest.TestCase):
 
         self.assert_visible_message(
             message,
-            "SmartReader | code-reviewer | Task finished",
-            "Project SmartReader, code reviewer agent, task finished.",
+            'Project "SmartReader", agent "code-reviewer", task finished.',
+            'Project "SmartReader", agent "code-reviewer", task finished.',
         )
         self.assert_private_context_not_visible("\n".join((message.title, message.body, message.speech)))
 
@@ -181,8 +181,8 @@ class CodexNotifyMessageTest(unittest.TestCase):
 
         self.assert_visible_message(
             message,
-            "SmartReader | qa-expert | Task started",
-            "Project SmartReader, qa expert agent, task started.",
+            'Project "SmartReader", agent "qa-expert", task started.',
+            'Project "SmartReader", agent "qa-expert", task started.',
         )
 
     def test_subagent_message_does_not_use_uuid_agent_id_as_visible_agent(self):
@@ -196,8 +196,8 @@ class CodexNotifyMessageTest(unittest.TestCase):
 
         self.assert_visible_message(
             message,
-            "SmartReader | subagent | Task started",
-            "Project SmartReader, subagent, task started.",
+            'Project "SmartReader", agent "subagent", task started.',
+            'Project "SmartReader", agent "subagent", task started.',
         )
         self.assertNotIn("019e5398", "\n".join((message.title, message.body, message.speech)))
 
@@ -208,8 +208,8 @@ class CodexNotifyMessageTest(unittest.TestCase):
 
         self.assert_visible_message(
             message,
-            "SmartReader | parent | Task started",
-            "Project SmartReader, parent agent, task started.",
+            'Project "SmartReader", agent "parent", task started.',
+            'Project "SmartReader", agent "parent", task started.',
         )
 
     def test_project_falls_back_to_pwd_when_process_cwd_is_unavailable(self):
@@ -219,8 +219,8 @@ class CodexNotifyMessageTest(unittest.TestCase):
 
         self.assert_visible_message(
             message,
-            "SmartReader | parent | Task finished",
-            "Project SmartReader, parent agent, task finished.",
+            'Project "SmartReader", agent "parent", task finished.',
+            'Project "SmartReader", agent "parent", task finished.',
         )
 
     def test_unknown_project_is_used_only_after_all_project_sources_are_missing(self):
@@ -230,8 +230,8 @@ class CodexNotifyMessageTest(unittest.TestCase):
 
         self.assert_visible_message(
             message,
-            "Unknown project | parent | Task finished",
-            "Project unknown project, parent agent, task finished.",
+            'Project "Unknown project", agent "parent", task finished.',
+            'Project "Unknown project", agent "parent", task finished.',
         )
 
     def test_thread_and_conversation_names_are_not_visible(self):
@@ -247,34 +247,35 @@ class CodexNotifyMessageTest(unittest.TestCase):
         )
 
         text = "\n".join((message.title, message.body, message.speech))
-        self.assertIn("SmartReader | parent | Task started", message.title)
+        self.assertIn('Project "SmartReader", agent "parent", task started.', message.title)
         self.assertNotIn("Secret Thread", text)
         self.assertNotIn("Secret Conversation", text)
 
     def test_registered_events_have_english_messages(self):
         cases = [
-            ("SessionStart", "parent", "Session started", "parent agent", "session started"),
-            ("UserPromptSubmit", "parent", "Task started", "parent agent", "task started"),
-            ("PermissionRequest", "parent", "Permission requested", "parent agent", "permission requested"),
-            ("SubagentStart", "fullstack-developer", "Task started", "fullstack developer agent", "task started"),
-            ("SubagentStop", "fullstack-developer", "Task finished", "fullstack developer agent", "task finished"),
-            ("Stop", "parent", "Task finished", "parent agent", "task finished"),
+            ("SessionStart", "parent", "session started", ""),
+            ("UserPromptSubmit", "parent", "task started", 'Project "SmartReader", agent "parent", task started.'),
+            ("PermissionRequest", "parent", 'permission requested for "Bash"', 'Project "SmartReader", agent "parent", permission requested for "Bash".'),
+            ("SubagentStart", "fullstack-developer", "task started", 'Project "SmartReader", agent "fullstack-developer", task started.'),
+            ("SubagentStop", "fullstack-developer", "task finished", 'Project "SmartReader", agent "fullstack-developer", task finished.'),
+            ("Stop", "parent", "task finished", 'Project "SmartReader", agent "parent", task finished.'),
         ]
 
-        for event, agent, action, speech_agent, speech_action in cases:
+        for event, agent, action, expected_speech in cases:
             with self.subTest(event=event):
                 message = self.notify.build_message(
                     {
                         "hook_event_name": event,
                         "cwd": "/Users/mario/SelfProject/SmartReader",
                         "agent_type": "fullstack-developer",
+                        "tool_name": "Bash",
                     }
                 )
 
                 self.assert_visible_message(
                     message,
-                    f"SmartReader | {agent} | {action}",
-                    f"Project SmartReader, {speech_agent}, {speech_action}.",
+                    f'Project "SmartReader", agent "{agent}", {action}.',
+                    expected_speech,
                     urgent=(event == "PermissionRequest"),
                 )
 
@@ -309,12 +310,21 @@ class CodexNotifyStdoutTest(unittest.TestCase):
         cls.notify = load_notify_module()
 
     def run_main_for_stdout(self, payload):
-        with mock.patch.object(self.notify, "read_hook_input", return_value=payload), \
-                mock.patch.object(self.notify, "send_message"), \
-                mock.patch.object(self.notify, "run_detached"), \
-                mock.patch.object(self.notify, "log_backend_success"), \
-                mock.patch.object(sys, "stdout") as stdout:
-            exit_code = self.notify.main()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_state_path = self.notify.STATE_PATH
+            old_lock_path = self.notify.STATE_LOCK_PATH
+            try:
+                self.notify.STATE_PATH = Path(tmpdir) / "state.json"
+                self.notify.STATE_LOCK_PATH = Path(tmpdir) / "state.lock"
+                with mock.patch.object(self.notify, "read_hook_input", return_value=payload), \
+                        mock.patch.object(self.notify, "send_message"), \
+                        mock.patch.object(self.notify, "run_detached"), \
+                        mock.patch.object(self.notify, "log_backend_success"), \
+                        mock.patch.object(sys, "stdout") as stdout:
+                    exit_code = self.notify.main()
+            finally:
+                self.notify.STATE_PATH = old_state_path
+                self.notify.STATE_LOCK_PATH = old_lock_path
 
         return exit_code, "".join(call.args[0] for call in stdout.write.call_args_list)
 
@@ -331,11 +341,20 @@ class CodexNotifyStdoutTest(unittest.TestCase):
         def recording_run_detached(cmd, **kwargs):
             events.append(("run_detached", cmd, kwargs.get("env", {})))
 
-        with mock.patch.object(self.notify, "read_hook_input", return_value=payload), \
-                mock.patch.object(self.notify, "send_message"), \
-                mock.patch.object(self.notify, "run_detached", side_effect=recording_run_detached), \
-                mock.patch.object(sys, "stdout", RecordingStdout()):
-            exit_code = self.notify.main()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_state_path = self.notify.STATE_PATH
+            old_lock_path = self.notify.STATE_LOCK_PATH
+            try:
+                self.notify.STATE_PATH = Path(tmpdir) / "state.json"
+                self.notify.STATE_LOCK_PATH = Path(tmpdir) / "state.lock"
+                with mock.patch.object(self.notify, "read_hook_input", return_value=payload), \
+                        mock.patch.object(self.notify, "send_message"), \
+                        mock.patch.object(self.notify, "run_detached", side_effect=recording_run_detached), \
+                        mock.patch.object(sys, "stdout", RecordingStdout()):
+                    exit_code = self.notify.main()
+            finally:
+                self.notify.STATE_PATH = old_state_path
+                self.notify.STATE_LOCK_PATH = old_lock_path
 
         return exit_code, events
 
@@ -367,8 +386,8 @@ class CodexNotifyStdoutTest(unittest.TestCase):
         self.assertEqual(1, len(detached_events))
         payload = json.loads(detached_events[0][2][self.notify.DETACHED_NOTIFY_ENV])
         self.assertEqual("Stop", payload["event"])
-        self.assertEqual("SmartReader | parent | Task finished", payload["message"]["title"])
-        self.assertEqual("Project SmartReader, parent agent, task finished.", payload["message"]["speech"])
+        self.assertEqual('Project "SmartReader", agent "parent", task finished.', payload["message"]["title"])
+        self.assertEqual('Project "SmartReader", agent "parent", task finished.', payload["message"]["speech"])
 
     def test_subagent_stop_returns_after_stdout_and_uses_detached_notification(self):
         exit_code, events = self.run_stop_with_detached_tracking(
@@ -387,8 +406,8 @@ class CodexNotifyStdoutTest(unittest.TestCase):
         self.assertEqual(1, len(detached_events))
         payload = json.loads(detached_events[0][2][self.notify.DETACHED_NOTIFY_ENV])
         self.assertEqual("SubagentStop", payload["event"])
-        self.assertEqual("SmartReader | code-reviewer | Task finished", payload["message"]["title"])
-        self.assertEqual("Project SmartReader, code reviewer agent, task finished.", payload["message"]["speech"])
+        self.assertEqual('Project "SmartReader", agent "code-reviewer", task finished.', payload["message"]["title"])
+        self.assertEqual('Project "SmartReader", agent "code-reviewer", task finished.', payload["message"]["speech"])
 
     def test_session_start_does_not_write_developer_context(self):
         exit_code, stdout = self.run_main_for_stdout(
@@ -397,6 +416,148 @@ class CodexNotifyStdoutTest(unittest.TestCase):
 
         self.assertEqual(0, exit_code)
         self.assertEqual("", stdout)
+
+
+class CodexNotifyStatefulEventTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not SCRIPT_PATH.exists():
+            raise unittest.SkipTest("notify script has not been moved yet")
+        cls.notify = load_notify_module()
+
+    def with_temp_state(self, callback):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_state_path = self.notify.STATE_PATH
+            old_lock_path = self.notify.STATE_LOCK_PATH
+            old_log_path = self.notify.LOG_PATH
+            try:
+                self.notify.STATE_PATH = Path(tmpdir) / "state.json"
+                self.notify.STATE_LOCK_PATH = Path(tmpdir) / "state.lock"
+                self.notify.LOG_PATH = Path(tmpdir) / "codex_notify.jsonl"
+                callback()
+            finally:
+                self.notify.STATE_PATH = old_state_path
+                self.notify.STATE_LOCK_PATH = old_lock_path
+                self.notify.LOG_PATH = old_log_path
+
+    def test_stop_after_subagent_start_is_reported_as_subagent_finished(self):
+        detached_payloads = []
+
+        def scenario():
+            with mock.patch.object(
+                self.notify,
+                "read_hook_input",
+                return_value={
+                    "hook_event_name": "SubagentStart",
+                    "agent_type": "code-reviewer",
+                    "session_id": "session-1",
+                    "turn_id": "turn-1",
+                    "cwd": "/Users/mario/SelfProject/SmartReader",
+                },
+            ), mock.patch.object(self.notify, "send_message"), mock.patch.object(self.notify, "log_backend_success"):
+                self.notify.main()
+
+            def capture_detached(cmd, **kwargs):
+                detached_payloads.append(json.loads(kwargs["env"][self.notify.DETACHED_NOTIFY_ENV]))
+
+            with mock.patch.object(
+                self.notify,
+                "read_hook_input",
+                return_value={
+                    "hook_event_name": "Stop",
+                    "session_id": "session-1",
+                    "turn_id": "turn-1",
+                    "cwd": "/Users/mario/SelfProject/SmartReader",
+                },
+            ), mock.patch.object(self.notify, "run_detached", side_effect=capture_detached), \
+                    mock.patch.object(sys, "stdout", mock.Mock()):
+                self.notify.main()
+
+        self.with_temp_state(scenario)
+
+        self.assertEqual(1, len(detached_payloads))
+        self.assertEqual("subagent", detached_payloads[0]["agent_scope"])
+        self.assertEqual('Project "SmartReader", agent "code-reviewer", task finished.', detached_payloads[0]["message"]["title"])
+
+    def test_immediate_user_prompt_after_subagent_start_is_not_reported_as_parent_start(self):
+        sent_titles = []
+
+        def scenario():
+            with mock.patch.object(
+                self.notify,
+                "read_hook_input",
+                return_value={
+                    "hook_event_name": "SubagentStart",
+                    "agent_type": "qa-expert",
+                    "session_id": "session-1",
+                    "turn_id": "turn-1",
+                    "cwd": "/Users/mario/SelfProject/SmartReader",
+                },
+            ), mock.patch.object(self.notify, "send_message", side_effect=lambda data, message: sent_titles.append(message.title)), \
+                    mock.patch.object(self.notify, "log_backend_success"):
+                self.notify.main()
+
+            with mock.patch.object(
+                self.notify,
+                "read_hook_input",
+                return_value={
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "session-1",
+                    "turn_id": "turn-1",
+                    "cwd": "/Users/mario/SelfProject/SmartReader",
+                },
+            ), mock.patch.object(self.notify, "send_message", side_effect=lambda data, message: sent_titles.append(message.title)), \
+                    mock.patch.object(self.notify, "log_backend_success"):
+                self.notify.main()
+
+        self.with_temp_state(scenario)
+
+        self.assertEqual(['Project "SmartReader", agent "qa-expert", task started.'], sent_titles)
+
+    def test_subagent_stop_clears_state_so_later_stop_is_parent_finished(self):
+        detached_payloads = []
+
+        def capture_detached(cmd, **kwargs):
+            detached_payloads.append(json.loads(kwargs["env"][self.notify.DETACHED_NOTIFY_ENV]))
+
+        def scenario():
+            payloads = [
+                {
+                    "hook_event_name": "SubagentStart",
+                    "agent_type": "qa-expert",
+                    "session_id": "session-1",
+                    "turn_id": "turn-1",
+                    "cwd": "/Users/mario/SelfProject/SmartReader",
+                },
+                {
+                    "hook_event_name": "SubagentStop",
+                    "agent_type": "qa-expert",
+                    "session_id": "session-1",
+                    "turn_id": "turn-1",
+                    "cwd": "/Users/mario/SelfProject/SmartReader",
+                },
+                {
+                    "hook_event_name": "Stop",
+                    "session_id": "session-1",
+                    "turn_id": "turn-1",
+                    "cwd": "/Users/mario/SelfProject/SmartReader",
+                },
+            ]
+            for payload in payloads:
+                with mock.patch.object(self.notify, "read_hook_input", return_value=payload), \
+                        mock.patch.object(self.notify, "send_message"), \
+                        mock.patch.object(self.notify, "run_detached", side_effect=capture_detached), \
+                        mock.patch.object(self.notify, "log_backend_success"), \
+                        mock.patch.object(sys, "stdout", mock.Mock()):
+                    self.notify.main()
+
+        self.with_temp_state(scenario)
+
+        self.assertEqual(2, len(detached_payloads))
+        self.assertEqual('Project "SmartReader", agent "qa-expert", task finished.', detached_payloads[0]["message"]["title"])
+        self.assertEqual("subagent", detached_payloads[0]["agent_scope"])
+        self.assertEqual('Project "SmartReader", agent "parent", task finished.', detached_payloads[1]["message"]["title"])
+        self.assertEqual("parent", detached_payloads[1]["agent_scope"])
 
 
 class CodexNotifySpeechTest(unittest.TestCase):
@@ -494,6 +655,16 @@ class CodexNotifySpeechTest(unittest.TestCase):
 
         self.assertEqual([["say", "-r", "240", "hello"]], calls)
 
+    def test_notify_does_not_speak_when_message_speech_is_empty(self):
+        calls = []
+
+        with mock.patch.object(self.notify.platform, "system", return_value="Darwin"), \
+                mock.patch.object(self.notify, "notify_macos", side_effect=lambda *args: calls.append(args)), \
+                mock.patch.object(self.notify, "speak", side_effect=AssertionError("speech should be skipped")):
+            self.notify.notify('Project "SmartReader", agent "parent", session started.', 'Project "SmartReader", agent "parent", session started.', "")
+
+        self.assertEqual([('Project "SmartReader", agent "parent", session started.', 'Project "SmartReader", agent "parent", session started.', False)], calls)
+
 
 class CodexNotifyMacNotificationTest(unittest.TestCase):
     @classmethod
@@ -502,23 +673,48 @@ class CodexNotifyMacNotificationTest(unittest.TestCase):
             raise unittest.SkipTest("notify script has not been moved yet")
         cls.notify = load_notify_module()
 
-    def test_macos_notification_uses_osascript_by_default_even_when_helper_exists(self):
-        calls = []
+    def test_macos_notification_uses_native_helper_by_default_when_helper_exists(self):
+        helper_calls = []
+        detached_calls = []
 
         with tempfile.TemporaryDirectory() as tmpdir:
             helper = Path(tmpdir) / "codex_macos_notify.py"
             helper.write_text("# helper\n", encoding="utf-8")
             with mock.patch.object(self.notify.shutil, "which", return_value="/usr/bin/osascript"), \
-                    mock.patch.object(self.notify, "run_detached", side_effect=calls.append), \
+                    mock.patch.object(self.notify, "run_macos_helper", side_effect=lambda *args: helper_calls.append(args) or True), \
+                    mock.patch.object(self.notify, "run_detached", side_effect=detached_calls.append), \
                     mock.patch.dict(os.environ, {"SMARTCODEX_NOTIFY_HELPER": str(helper)}, clear=True):
-                self.notify.notify_macos("SmartReader | parent | Task started", "SmartReader | parent | Task started", urgent=False)
+                self.notify.notify_macos('Project "SmartReader", agent "parent", task started.', 'Project "SmartReader", agent "parent", task started.', urgent=False)
 
-        scripts = "\n".join(call[-1] for call in calls)
-        self.assertEqual(1, len(calls))
-        self.assertIn("display notification", scripts)
-        self.assertNotIn(str(helper), scripts)
+        self.assertEqual(1, len(helper_calls))
+        self.assertEqual(
+            (
+                str(helper),
+                'Project "SmartReader", agent "parent", task started.',
+                'Project "SmartReader", agent "parent", task started.',
+            ),
+            helper_calls[0],
+        )
+        self.assertEqual([], detached_calls)
 
-    def test_macos_notification_helper_is_opt_in(self):
+    def test_macos_notification_falls_back_to_osascript_when_native_helper_fails(self):
+        helper_calls = []
+        detached_calls = []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            helper = Path(tmpdir) / "codex_macos_notify.py"
+            helper.write_text("# helper\n", encoding="utf-8")
+            with mock.patch.object(self.notify.shutil, "which", return_value="/usr/bin/osascript"), \
+                    mock.patch.object(self.notify, "run_macos_helper", side_effect=lambda *args: helper_calls.append(args) or False), \
+                    mock.patch.object(self.notify, "run_detached", side_effect=detached_calls.append), \
+                    mock.patch.dict(os.environ, {"SMARTCODEX_NOTIFY_HELPER": str(helper)}, clear=True):
+                self.notify.notify_macos('Project "SmartReader", agent "parent", task started.', 'Project "SmartReader", agent "parent", task started.', urgent=False)
+
+        self.assertEqual(1, len(helper_calls))
+        self.assertEqual(1, len(detached_calls))
+        self.assertIn("display notification", detached_calls[0][-1])
+
+    def test_macos_notification_helper_can_be_disabled(self):
         calls = []
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -530,25 +726,27 @@ class CodexNotifyMacNotificationTest(unittest.TestCase):
                         os.environ,
                         {
                             "SMARTCODEX_NOTIFY_HELPER": str(helper),
-                            "SMARTCODEX_NOTIFY_USE_HELPER": "1",
+                            "SMARTCODEX_NOTIFY_DISABLE_HELPER": "1",
                         },
                         clear=True,
                     ):
-                self.notify.notify_macos("SmartReader | parent | Task started", "SmartReader | parent | Task started", urgent=False)
+                self.notify.notify_macos('Project "SmartReader", agent "parent", task started.', 'Project "SmartReader", agent "parent", task started.', urgent=False)
 
-        self.assertEqual(
-            [
-                [
-                    sys.executable,
-                    str(helper),
-                    "--title",
-                    "SmartReader | parent | Task started",
-                    "--message",
-                    "SmartReader | parent | Task started",
-                ]
-            ],
-            calls,
-        )
+        scripts = "\n".join(call[-1] for call in calls)
+        self.assertEqual(1, len(calls))
+        self.assertIn("display notification", scripts)
+        self.assertNotIn(str(helper), scripts)
+
+    def test_macos_notification_falls_back_to_plain_osascript_when_helper_is_missing(self):
+        calls = []
+
+        with mock.patch.object(self.notify.shutil, "which", return_value="/usr/bin/osascript"), \
+                mock.patch.object(self.notify, "run_detached", side_effect=lambda cmd: calls.append(("detached", cmd))), \
+                mock.patch.dict(os.environ, {}, clear=True):
+            self.notify.notify_macos('Project "SmartReader", agent "parent", task started.', 'Project "SmartReader", agent "parent", task started.', urgent=False)
+
+        self.assertEqual("detached", calls[0][0])
+        self.assertIn("display notification", calls[0][1][-1])
 
     def test_macos_permission_request_dialog_is_opt_in(self):
         calls = []
@@ -556,7 +754,7 @@ class CodexNotifyMacNotificationTest(unittest.TestCase):
         with mock.patch.object(self.notify.shutil, "which", return_value="/usr/bin/osascript"), \
                 mock.patch.object(self.notify, "run_detached", side_effect=calls.append), \
                 mock.patch.dict(os.environ, {"CODEX_NOTIFY_URGENT_MODAL": "1"}, clear=True):
-            self.notify.notify_macos("SmartReader | parent | Permission requested", "SmartReader | parent | Permission requested", urgent=True)
+            self.notify.notify_macos('Project "SmartReader", agent "parent", permission requested for "Bash".', 'Project "SmartReader", agent "parent", permission requested for "Bash".', urgent=True)
 
         scripts = "\n".join(call[-1] for call in calls)
         self.assertEqual(2, len(calls))
@@ -577,12 +775,109 @@ class CodexNotifyMacNotificationTest(unittest.TestCase):
                     "cwd": "/Users/mario/SelfProject/SmartReader",
                 }
             )
-            self.notify.send_message(message)
+            self.notify.send_message(
+                {
+                    "hook_event_name": "PermissionRequest",
+                    "cwd": "/Users/mario/SelfProject/SmartReader",
+                },
+                message,
+            )
 
         scripts = "\n".join(call[-1] for call in calls)
         self.assertEqual(1, len(calls))
         self.assertIn("display notification", scripts)
         self.assertNotIn("display dialog", scripts)
+
+
+class CodexNotifyMobileNotificationTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not SCRIPT_PATH.exists():
+            raise unittest.SkipTest("notify script has not been moved yet")
+        cls.notify = load_notify_module()
+
+    def test_mobile_notification_urls_parse_comma_and_newline_values(self):
+        with mock.patch.dict(
+            os.environ,
+            {"SMARTCODEX_MOBILE_NOTIFY_URLS": " https://example.test/a,\nhttps://example.test/b "},
+            clear=True,
+        ):
+            self.assertEqual(
+                ["https://example.test/a", "https://example.test/b"],
+                self.notify.mobile_notify_urls(),
+            )
+
+    def test_mobile_notification_sends_only_parent_task_start_and_stop(self):
+        calls = []
+
+        with mock.patch.dict(os.environ, {"SMARTCODEX_MOBILE_NOTIFY_URLS": "https://example.test/mobile"}, clear=True), \
+                mock.patch.object(self.notify, "send_mobile_webhook", side_effect=lambda url, payload: calls.append((url, payload))):
+            start = self.notify.build_message(
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "cwd": "/Users/mario/SelfProject/SmartReader",
+                }
+            )
+            stop = self.notify.build_message(
+                {
+                    "hook_event_name": "Stop",
+                    "cwd": "/Users/mario/SelfProject/SmartReader",
+                }
+            )
+            self.notify.notify_mobile({"hook_event_name": "UserPromptSubmit"}, start)
+            self.notify.notify_mobile({"hook_event_name": "Stop"}, stop)
+
+        self.assertEqual(2, len(calls))
+        self.assertEqual('Project "SmartReader", agent "parent", task started.', calls[0][1]["title"])
+        self.assertEqual('Project "SmartReader", agent "parent", task finished.', calls[1][1]["title"])
+        self.assertEqual("UserPromptSubmit", calls[0][1]["event"])
+        self.assertEqual("Stop", calls[1][1]["event"])
+
+    def test_mobile_notification_skips_permission_session_and_subagent_events(self):
+        calls = []
+
+        with mock.patch.dict(os.environ, {"SMARTCODEX_MOBILE_NOTIFY_URLS": "https://example.test/mobile"}, clear=True), \
+                mock.patch.object(self.notify, "send_mobile_webhook", side_effect=lambda url, payload: calls.append((url, payload))):
+            for event in ("SessionStart", "PermissionRequest", "SubagentStart", "SubagentStop"):
+                message = self.notify.build_message(
+                    {
+                        "hook_event_name": event,
+                        "cwd": "/Users/mario/SelfProject/SmartReader",
+                    }
+                )
+                self.notify.notify_mobile({"hook_event_name": event}, message)
+
+        self.assertEqual([], calls)
+
+    def test_ntfy_mobile_webhook_uses_plain_message_and_title_header(self):
+        requests = []
+
+        def fake_urlopen(request, timeout):
+            requests.append((request, timeout))
+
+            class Response:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+            return Response()
+
+        with mock.patch.object(self.notify.urllib.request, "urlopen", side_effect=fake_urlopen):
+            self.notify.send_mobile_webhook(
+                "https://ntfy.sh/smartcodex-test",
+                {
+                    "event": "UserPromptSubmit",
+                    "title": 'Project "SmartReader", agent "parent", task started.',
+                    "message": 'Project "SmartReader", agent "parent", task started.',
+                },
+            )
+
+        request, timeout = requests[0]
+        self.assertEqual(self.notify.MOBILE_NOTIFY_TIMEOUT_SECONDS, timeout)
+        self.assertEqual(b'Project "SmartReader", agent "parent", task started.', request.data)
+        self.assertEqual('Project "SmartReader", agent "parent", task started.', request.headers["Title"])
 
 
 class CodexNotifyLoggingTest(unittest.TestCase):
@@ -618,9 +913,9 @@ class CodexNotifyLoggingTest(unittest.TestCase):
                         "tool_input": {"command": "deploy --token super-secret-token"},
                     },
                     self.notify.HookMessage(
-                        title="SmartReader | parent | Permission requested",
-                        body="SmartReader | parent | Permission requested",
-                        speech="Project SmartReader, parent agent, permission requested.",
+                        title='Project "SmartReader", agent "parent", permission requested for "Bash".',
+                        body='Project "SmartReader", agent "parent", permission requested for "Bash".',
+                        speech='Project "SmartReader", agent "parent", permission requested for "Bash".',
                         urgent=True,
                     ),
                     project_source="payload.cwd",
@@ -637,7 +932,7 @@ class CodexNotifyLoggingTest(unittest.TestCase):
         self.assertEqual("functions.exec_command", entries[0]["tool_name"])
         self.assertEqual("payload.cwd", entries[0]["project_source"])
         self.assertEqual("parent_event", entries[0]["agent_source"])
-        self.assertEqual("SmartReader | parent | Permission requested", entries[0]["message"]["title"])
+        self.assertEqual('Project "SmartReader", agent "parent", permission requested for "Bash".', entries[0]["message"]["title"])
         self.assertNotIn("tool_input", entries[0])
         self.assertNotIn("super-secret-token", json.dumps(entries[0], ensure_ascii=False))
 

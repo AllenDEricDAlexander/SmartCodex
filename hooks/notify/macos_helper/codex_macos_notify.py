@@ -7,6 +7,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 
 
 APP_NAME = "CodexNotify.app"
@@ -29,8 +31,42 @@ def open_helper_app(helper_dir: Path, args: list[str]) -> bool:
     open_bin = shutil.which("open")
     if not open_bin:
         return False
-    result = subprocess.run([open_bin, "-n", str(app_path), "--args", *args], check=False)
-    return result.returncode == 0
+    applet_path = app_path / "Contents" / "MacOS" / "applet"
+    status_path = Path(tempfile.gettempdir()) / f"smartcodex-notify-status-{id(args)}.txt"
+    try:
+        if status_path.exists():
+            status_path.unlink()
+        result = subprocess.run(
+            [
+                open_bin,
+                "-g",
+                "-n",
+                str(app_path),
+                "--args",
+                *args,
+                "--status-file",
+                str(status_path),
+            ],
+            check=False,
+            timeout=2,
+        )
+        if result.returncode != 0:
+            return False
+        if applet_path.exists():
+            return True
+        deadline = time.monotonic() + 4
+        while not status_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if not status_path.exists():
+            return False
+        return status_path.read_text(encoding="utf-8").strip() == "ok"
+    except Exception:
+        return False
+    finally:
+        try:
+            status_path.unlink()
+        except OSError:
+            pass
 
 
 def build_parser() -> argparse.ArgumentParser:

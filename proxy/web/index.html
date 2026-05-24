@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SmartCodex Proxy Test Client</title>
+  <style>
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      margin: 0;
+      padding: 24px;
+      color: #0f172a;
+      background: #f8fafc;
+    }
+
+    main {
+      max-width: 900px;
+      margin: 0 auto;
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 1px 10px rgba(15, 23, 42, 0.08);
+    }
+
+    h1 {
+      margin-top: 0;
+    }
+
+    label {
+      display: block;
+      margin-top: 12px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    input, textarea, select, button {
+      width: 100%;
+      margin-top: 6px;
+      padding: 10px;
+      border-radius: 8px;
+      border: 1px solid #cbd5e1;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+
+    textarea {
+      font-family: Consolas, Menlo, Monaco, monospace;
+      min-height: 180px;
+      resize: vertical;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    button {
+      background: #2563eb;
+      color: #fff;
+      cursor: pointer;
+      border-color: #1d4ed8;
+    }
+
+    button.secondary {
+      background: #0f172a;
+      border-color: #0f172a;
+    }
+
+    pre {
+      margin-top: 16px;
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid #cbd5e1;
+      background: #0f172a;
+      color: #e2e8f0;
+      white-space: pre-wrap;
+      word-break: break-all;
+      min-height: 120px;
+    }
+
+    .status {
+      margin-top: 12px;
+      font-size: 13px;
+      color: #334155;
+    }
+
+    .ok { color: #16a34a; }
+    .warn { color: #ca8a04; }
+    .error { color: #dc2626; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>SmartCodex Proxy Test Client</h1>
+    <div class="status" id="notice">
+      本页面默认向 <code>http://127.0.0.1:18980</code> 发起测试请求，请先启动代理服务。
+    </div>
+
+    <label for="baseUrl">Proxy Base URL</label>
+    <input id="baseUrl" value="http://127.0.0.1:18980" />
+
+    <label for="path">接口路径</label>
+    <select id="path">
+      <option value="/v1/responses" selected>/v1/responses</option>
+      <option value="/v1/chat/completions">/v1/chat/completions</option>
+      <option value="/health">/health</option>
+    </select>
+
+    <label for="token">内部 JWT（Authorization）</label>
+    <input id="token" value="" placeholder="Bearer token required for /v1/*" />
+
+    <div class="row">
+      <div>
+        <label for="stream">stream</label>
+        <select id="stream">
+          <option value="false" selected>false</option>
+          <option value="true">true</option>
+        </select>
+      </div>
+      <div>
+        <label for="model">model（留空则用服务默认）</label>
+        <input id="model" value="" placeholder="gpt-5.3-codex-spark" />
+      </div>
+    </div>
+
+    <label for="body">Request Body (JSON)</label>
+    <textarea id="body">
+{
+  "input": "Hello, tell me a short summary."
+}</textarea>
+
+    <div class="actions">
+      <button id="healthBtn">Health Check</button>
+      <button id="sendBtn">Send Request</button>
+      <button class="secondary" id="clearBtn">Clear</button>
+    </div>
+
+    <label for="result">Response</label>
+    <pre id="result"></pre>
+  </main>
+
+  <script>
+    const baseUrlEl = document.getElementById("baseUrl");
+    const pathEl = document.getElementById("path");
+    const tokenEl = document.getElementById("token");
+    const streamEl = document.getElementById("stream");
+    const modelEl = document.getElementById("model");
+    const bodyEl = document.getElementById("body");
+    const resultEl = document.getElementById("result");
+    const noticeEl = document.getElementById("notice");
+
+    function setStatus(msg, cls = "") {
+      noticeEl.textContent = msg;
+      noticeEl.className = "status " + cls;
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+    }
+
+    function setResult(title, payload) {
+      resultEl.textContent = `${title}\n${payload}`;
+    }
+
+    async function readJsonBody() {
+      try {
+        return JSON.parse(bodyEl.value || "{}");
+      } catch (err) {
+        throw new Error("Body 必须是合法 JSON");
+      }
+    }
+
+    async function call(endpointPath, sendBody = true) {
+      const baseUrl = baseUrlEl.value.trim();
+      const path = pathEl.value.trim();
+      const url = baseUrl.replace(/\/$/, "") + path;
+
+      const headers = {
+        "Content-Type": "application/json"
+      };
+
+      const token = tokenEl.value.trim();
+      if (token && !token.startsWith("Bearer ")) {
+        headers.Authorization = `Bearer ${token}`;
+      } else if (token) {
+        headers.Authorization = token;
+      }
+
+      let body = {};
+      if (sendBody) {
+        body = await readJsonBody();
+        if (modelEl.value.trim()) {
+          body.model = modelEl.value.trim();
+        }
+        body.stream = streamEl.value === "true";
+      }
+
+      setResult("Sending...", "");
+      const start = Date.now();
+
+      const resp = await fetch(url, {
+        method: endpointPath === "/health" ? "GET" : "POST",
+        headers,
+        body: endpointPath === "/health" ? undefined : JSON.stringify(body),
+      });
+
+      const elapsed = Date.now() - start;
+      const headersText = [...resp.headers.entries()].map(([k, v]) => `${k}: ${v}`).join("\n");
+      let output = `status: ${resp.status} ${resp.statusText}\ntime: ${elapsed}ms\n${headersText}\n\n`;
+
+      if (bodyEl.value && endpointPath !== "/health" && resp.body && resp.headers.get("content-type")?.includes("text/event-stream")) {
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          output += buffer;
+          setResult("Streaming...", output);
+          buffer = "";
+        }
+      } else {
+        const text = await resp.text();
+        output += text;
+        setResult("Response", output);
+      }
+
+      if (!resp.ok) {
+        setStatus("请求失败，请检查 token 和代理是否启动", "error");
+      } else {
+        setStatus("请求成功", "ok");
+      }
+    }
+
+    function fillMock() {
+      bodyEl.value = JSON.stringify({
+        input: "Hello, tell me a short summary.",
+        stream: false
+      }, null, 2);
+    }
+
+    document.getElementById("healthBtn").addEventListener("click", async () => {
+      const prevPath = pathEl.value;
+      try {
+        pathEl.value = "/health";
+        await call("/health", false);
+      } finally {
+        pathEl.value = prevPath;
+      }
+    });
+
+    document.getElementById("sendBtn").addEventListener("click", () => {
+      fillMock();
+      call(pathEl.value, pathEl.value !== "/health").catch((err) => {
+        setResult("Error", err.message || String(err));
+        setStatus("请求异常，请检查服务/参数", "error");
+      });
+    });
+
+    document.getElementById("clearBtn").addEventListener("click", () => {
+      resultEl.textContent = "";
+      setStatus("已清空结果", "");
+    });
+  </script>
+</body>
+</html>

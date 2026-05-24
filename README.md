@@ -41,43 +41,53 @@ The notify hook is registered for these Codex events:
 Notification title and body use English-only text:
 
 ```text
-<project> | <agent> | <action>
+Project "<project>", agent "<agent>", <action>.
 ```
 
-Speech uses a separate text optimized for macOS `say`:
+Speech uses the same wording so the spoken reminder matches the popup:
 
 ```text
-Project <project>, <agent phrase>, <action>.
+Project "<project>", agent "<agent>", <action>.
 ```
+
+`SessionStart` is visual-only by default. It still creates a desktop
+notification, but it does not speak, because Codex often emits `SessionStart`
+immediately before `UserPromptSubmit` when a thread resumes.
 
 The project is resolved from the hook payload `cwd`, then the hook process
 working directory, then `PWD`. Parent events use `parent`; subagent events use
 `agent_type`, then `subagent_type`, then a safe non-id name, and finally
-`subagent`.
+`subagent`. UUID-like ids are never used as visible agent names.
 
 Actions are mapped as:
 
-- `SessionStart`: `Session started`
-- `UserPromptSubmit`: `Task started`
-- `Stop`: `Task finished`
-- `PermissionRequest`: `Permission requested`
-- `SubagentStart`: `Task started`
-- `SubagentStop`: `Task finished`
+- `SessionStart`: `session started`
+- `UserPromptSubmit`: `task started`
+- `Stop`: `task finished`
+- `PermissionRequest`: `permission requested for "<tool>"`
+- `SubagentStart`: `task started`
+- `SubagentStop`: `task finished`
 
 Examples:
 
 ```text
-SmartReader | parent | Session started
-SmartReader | parent | Task started
-SmartReader | parent | Permission requested
-SmartReader | fullstack-developer | Task started
-SmartReader | fullstack-developer | Task finished
-SmartReader | parent | Task finished
+Project "SmartReader", agent "parent", session started.
+Project "SmartReader", agent "parent", task started.
+Project "SmartReader", agent "parent", permission requested for "Bash".
+Project "SmartReader", agent "fullstack-developer", task started.
+Project "SmartReader", agent "fullstack-developer", task finished.
+Project "SmartReader", agent "parent", task finished.
 ```
 
 Internal identifiers are log-only. Notifications and speech never include
 dialog, thread, session, turn, or agent ids, and never include full prompts,
 commands, transcripts, assistant messages, or raw `tool_input` values.
+
+The hook keeps a small local state file at
+`~/.codex/logs/hooks/notify/state.json` to connect `SubagentStart` with later
+events. If Codex emits `Stop` instead of `SubagentStop` when a subagent returns
+to the parent, the hook reports the active subagent as finished and then clears
+that state. Immediate duplicate subagent start notifications are suppressed.
 
 `Stop` and `SubagentStop` write valid JSON stdout before notification side
 effects. Completion notifications are sent through a detached path so Codex does
@@ -91,18 +101,49 @@ CODEX_NOTIFY_URGENT_MODAL=1
 ```
 
 On macOS, the installer writes `SMARTCODEX_NOTIFY_HELPER` into each managed hook
-command. The runtime uses the stable `osascript display notification` path by
-default. The local `CodexNotify.app` helper is installed but opt-in because the
-helper app path can be blocked by LaunchServices on some macOS setups. Enable it
-only for local experiments with:
+command. The runtime sends notifications through the generated
+`CodexNotify.app` helper by default. The helper is shown to macOS as
+`Codex Notify` (`com.smartcodex.notify`). It is a native Swift app that calls
+macOS UserNotifications directly, carries the copied Codex icon, and avoids the
+script editor icon used by plain `osascript`. If the helper cannot launch or
+macOS denies notification permission, the runtime falls back to
+`osascript display notification` so the user still gets a popup even when the
+icon-specific path fails.
+
+For the correct Codex icon, allow notifications for `Codex Notify` in macOS
+System Settings > Notifications. During migration from older helper builds,
+macOS may also show `Codex` and `CodexNotify`; those can stay enabled, but the
+current helper identity is `Codex Notify`. Older gray-icon notifications already
+shown in Notification Center are stale fallback notifications and do not prove
+the current helper icon is wrong.
+
+Disable the helper and use the plain `osascript display notification` fallback
+with:
 
 ```bash
-SMARTCODEX_NOTIFY_USE_HELPER=1
+SMARTCODEX_NOTIFY_DISABLE_HELPER=1
 ```
 
-The installer copies `/Applications/Codex.app/Contents/Resources/icon.icns` into
-the helper app, falls back to `electron.icns`, and leaves the helper on the
-`osascript` notification path if neither icon exists.
+The installer compiles `hooks/notify/macos_helper/CodexNotifyApp.swift` into
+`CodexNotify.app`. If `swiftc` is unavailable, it falls back to the
+AppleScript applet source. The installer reads Codex.app's `CFBundleIconFile`,
+copies that `.icns` into the helper app, and falls back to `icon.icns` or
+`electron.icns` if the bundle metadata is unavailable. The helper opens the app
+in the background with `open -g -n`; it is not launched hidden so macOS can still
+surface the notification.
+
+Mobile push notifications are optional and webhook-based. Codex hooks currently
+run local command handlers; there is no documented ChatGPT mobile push API for a
+local hook to call directly. Configure a mobile webhook endpoint such as `ntfy`
+with:
+
+```bash
+SMARTCODEX_MOBILE_NOTIFY_URLS=https://ntfy.sh/<your-private-topic>
+```
+
+The mobile channel only sends parent task start and finish events:
+`UserPromptSubmit` and `Stop`. It intentionally skips `SessionStart`,
+`PermissionRequest`, and all subagent events.
 
 Speech playback is serialized across hook processes so multiple reminders do
 not speak over each other. macOS speech uses `say -r 300` by default. Override

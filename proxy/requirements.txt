@@ -1,0 +1,4 @@
+fastapi
+PyJWT
+httpx[socks]
+uvicorn[standard]
